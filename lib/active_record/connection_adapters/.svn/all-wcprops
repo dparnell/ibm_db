@@ -1,0 +1,17 @@
+K 25
+svn:wc:ra_dav:version-url
+V 82
+/svn/!svn/ver/42/trunk/IBM_DB_Adapter/ibm_db/lib/active_record/connection_adapters
+END
+ibm_db_pstmt.rb
+K 25
+svn:wc:ra_dav:version-url
+V 98
+/svn/!svn/ver/42/trunk/IBM_DB_Adapter/ibm_db/lib/active_record/connection_adapters/ibm_db_pstmt.rb
+END
+ibm_db_adapter.rb
+K 25
+svn:wc:ra_dav:version-url
+V 100
+/svn/!svn/ver/41/trunk/IBM_DB_Adapter/ibm_db/lib/active_record/connection_adapters/ibm_db_adapter.rb
+END

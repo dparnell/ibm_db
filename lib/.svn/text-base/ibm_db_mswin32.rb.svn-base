@@ -1,0 +1,1 @@
+require (RUBY_VERSION =~ /1.9/) ? 'mswin32/rb19x/ibm_db.so':'mswin32/rb18x/ibm_db.so'

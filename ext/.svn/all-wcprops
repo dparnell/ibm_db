@@ -1,0 +1,41 @@
+K 25
+svn:wc:ra_dav:version-url
+V 48
+/svn/!svn/ver/42/trunk/IBM_DB_Adapter/ibm_db/ext
+END
+Makefile.nt32
+K 25
+svn:wc:ra_dav:version-url
+V 62
+/svn/!svn/ver/38/trunk/IBM_DB_Adapter/ibm_db/ext/Makefile.nt32
+END
+ruby_ibm_db.h
+K 25
+svn:wc:ra_dav:version-url
+V 62
+/svn/!svn/ver/40/trunk/IBM_DB_Adapter/ibm_db/ext/ruby_ibm_db.h
+END
+ruby_ibm_db_cli.c
+K 25
+svn:wc:ra_dav:version-url
+V 66
+/svn/!svn/ver/40/trunk/IBM_DB_Adapter/ibm_db/ext/ruby_ibm_db_cli.c
+END
+extconf.rb
+K 25
+svn:wc:ra_dav:version-url
+V 59
+/svn/!svn/ver/40/trunk/IBM_DB_Adapter/ibm_db/ext/extconf.rb
+END
+ruby_ibm_db_cli.h
+K 25
+svn:wc:ra_dav:version-url
+V 66
+/svn/!svn/ver/42/trunk/IBM_DB_Adapter/ibm_db/ext/ruby_ibm_db_cli.h
+END
+ibm_db.c
+K 25
+svn:wc:ra_dav:version-url
+V 57
+/svn/!svn/ver/42/trunk/IBM_DB_Adapter/ibm_db/ext/ibm_db.c
+END
