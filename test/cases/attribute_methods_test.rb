@@ -1,4 +1,5 @@
 require "cases/helper"
+require 'active_support/core_ext/object/inclusion'
 require 'models/minimalistic'
 require 'models/developer'
 require 'models/auto_id'
@@ -8,6 +9,8 @@ require 'models/topic'
 require 'models/company'
 require 'models/category'
 require 'models/reply'
+require 'models/contact'
+require 'models/keyboard'
 
 class AttributeMethodsTest < ActiveRecord::TestCase
   fixtures :topics, :developers, :companies, :computers
@@ -75,6 +78,7 @@ class AttributeMethodsTest < ActiveRecord::TestCase
   def test_respond_to?
     topic = Topic.find(1)
     assert_respond_to topic, "title"
+    assert_respond_to topic, "_title"
     assert_respond_to topic, "title?"
     assert_respond_to topic, "title="
     assert_respond_to topic, :title
@@ -84,6 +88,25 @@ class AttributeMethodsTest < ActiveRecord::TestCase
     assert_respond_to topic, "attribute_names"
     assert !topic.respond_to?("nothingness")
     assert !topic.respond_to?(:nothingness)
+  end
+
+  def test_respond_to_with_custom_primary_key
+    keyboard = Keyboard.create
+    assert_not_nil keyboard.key_number
+    assert_equal keyboard.key_number, keyboard.id
+    assert keyboard.respond_to?('key_number')
+    assert keyboard.respond_to?('_key_number')
+    assert keyboard.respond_to?('id')
+    assert keyboard.respond_to?('_id')
+  end
+
+  # Syck calls respond_to? before actually calling initialize
+  def test_respond_to_with_allocated_object
+    topic = Topic.allocate
+    assert !topic.respond_to?("nothingness")
+    assert !topic.respond_to?(:nothingness)
+    assert_respond_to topic, "title"
+    assert_respond_to topic, :title
   end
 
   def test_array_content
@@ -96,34 +119,55 @@ class AttributeMethodsTest < ActiveRecord::TestCase
 
   def test_read_attributes_before_type_cast
     category = Category.new({:name=>"Test categoty", :type => nil})
-    category_attrs = {"name"=>"Test categoty", "type" => nil, "categorizations_count" => nil}
+    category_attrs = {"name"=>"Test categoty", "id" => nil, "type" => nil, "categorizations_count" => nil}
     assert_equal category_attrs , category.attributes_before_type_cast
   end
 
   if current_adapter?(:MysqlAdapter)
     def test_read_attributes_before_type_cast_on_boolean
       bool = Boolean.create({ "value" => false })
-      assert_equal "0", bool.reload.attributes_before_type_cast["value"]
+      if RUBY_PLATFORM =~ /java/
+        # JRuby will return the value before typecast as string
+        assert_equal "0", bool.reload.attributes_before_type_cast["value"]
+      else
+        assert_equal 0, bool.reload.attributes_before_type_cast["value"]
+      end
     end
   end
 
-  unless current_adapter?(:Mysql2Adapter)
-    def test_read_attributes_before_type_cast_on_datetime
-      developer = Developer.find(:first)
-      # Oracle adapter returns Time before type cast
-      unless current_adapter?(:OracleAdapter)
-        assert_equal developer.created_at.to_s(:db) , developer.attributes_before_type_cast["created_at"]
-      else
-        assert_equal developer.created_at.to_s(:db) , developer.attributes_before_type_cast["created_at"].to_s(:db)
+  def test_read_attributes_before_type_cast_on_datetime
+    in_time_zone "Pacific Time (US & Canada)" do
+      record = @target.new
 
-        developer.created_at = "345643456"
-        assert_equal developer.created_at_before_type_cast, "345643456"
-        assert_equal developer.created_at, nil
+      record.written_on = "345643456"
+      assert_equal "345643456", record.written_on_before_type_cast
+      assert_equal nil, record.written_on
 
-        developer.created_at = "2010-03-21 21:23:32"
-        assert_equal developer.created_at_before_type_cast, "2010-03-21 21:23:32"
-        assert_equal developer.created_at, Time.parse("2010-03-21 21:23:32")
-      end
+      record.written_on = "2009-10-11 12:13:14"
+      assert_equal "2009-10-11 12:13:14", record.written_on_before_type_cast
+      assert_equal Time.zone.parse("2009-10-11 12:13:14"), record.written_on
+      assert_equal ActiveSupport::TimeZone["Pacific Time (US & Canada)"], record.written_on.time_zone
+    end
+  end
+
+  def test_read_attributes_after_type_cast_on_datetime
+    tz = "Pacific Time (US & Canada)"
+
+    in_time_zone tz do
+      record = @target.new
+
+      date_string = "2011-03-24"
+      time        = Time.zone.parse date_string
+
+      record.written_on = date_string
+      assert_equal date_string, record.written_on_before_type_cast
+      assert_equal time, record.written_on
+      assert_equal ActiveSupport::TimeZone[tz], record.written_on.time_zone
+
+      record.save
+      record.reload
+
+      assert_equal time, record.written_on
     end
   end
 
@@ -157,7 +201,7 @@ class AttributeMethodsTest < ActiveRecord::TestCase
 
   def test_case_sensitive_attributes_hash
     # DB2 is not case-sensitive
-    return true if current_adapter?(:DB2Adapter)
+    return true if current_adapter?(:DB2Adapter,:IBM_DBAdapter)
 
     assert_equal @loaded_fixtures['computers']['workstation'].to_hash, Computer.find(:first).attributes
   end
@@ -236,6 +280,12 @@ class AttributeMethodsTest < ActiveRecord::TestCase
     # puts topic.inspect
     assert topic.approved?, "approved should be true"
     # puts ""
+  end
+
+  def test_read_overridden_attribute
+    topic = Topic.new(:title => 'a')
+    def topic.title() 'b' end
+    assert_equal 'a', topic[:title]
   end
 
   def test_query_attribute_string
@@ -352,7 +402,7 @@ class AttributeMethodsTest < ActiveRecord::TestCase
 
   def test_typecast_attribute_from_select_to_false
     topic = Topic.create(:title => 'Budget')
-    # Oracle does not support boolean expressions in SELECT
+    # Oracle and DB2 does not support boolean expressions in SELECT
     if current_adapter?(:OracleAdapter) || current_adapter?(:IBM_DBAdapter)
       topic = Topic.find(:first, :select => "topics.*, 0 as is_test")
     else
@@ -363,7 +413,7 @@ class AttributeMethodsTest < ActiveRecord::TestCase
 
   def test_typecast_attribute_from_select_to_true
     topic = Topic.create(:title => 'Budget')
-    # Oracle does not support boolean expressions in SELECT
+    # Oracle and DB2 does not support boolean expressions in SELECT
     if current_adapter?(:OracleAdapter) || current_adapter?(:IBM_DBAdapter)
       topic = Topic.find(:first, :select => "topics.*, 1 as is_test")
     else
@@ -419,12 +469,8 @@ class AttributeMethodsTest < ActiveRecord::TestCase
     Topic.instance_variable_set "@cached_attributes", nil
   end
 
-  def test_time_related_columns_are_actually_cached
-    column_types = %w(datetime timestamp time date).map(&:to_sym)
-    column_names = Topic.columns.select{|c| column_types.include?(c.type) }.map(&:name)
-
-    assert_equal column_names.sort, Topic.cached_attributes.sort
-    assert_equal time_related_columns_on_topic.sort, Topic.cached_attributes.sort
+  def test_cacheable_columns_are_actually_cached
+    assert_equal cached_columns.sort, Topic.cached_attributes.sort
   end
 
   def test_accessing_cached_attributes_caches_the_converted_values_and_nothing_else
@@ -435,8 +481,7 @@ class AttributeMethodsTest < ActiveRecord::TestCase
     assert cache.empty?
 
     all_columns = Topic.columns.map(&:name)
-    cached_columns = time_related_columns_on_topic
-    uncached_columns =  all_columns - cached_columns
+    uncached_columns = all_columns - cached_columns
 
     all_columns.each do |attr_name|
       attribute_gets_cached = Topic.cache_attribute?(attr_name)
@@ -448,6 +493,14 @@ class AttributeMethodsTest < ActiveRecord::TestCase
         assert uncached_columns.include?(attr_name)
         assert !cache.include?(attr_name)
       end
+    end
+  end
+
+  def test_write_nil_to_time_attributes
+    in_time_zone "Pacific Time (US & Canada)" do
+      record = @target.new
+      record.written_on = nil
+      assert_nil record.written_on
     end
   end
 
@@ -546,7 +599,7 @@ class AttributeMethodsTest < ActiveRecord::TestCase
     topic = @target.new(:title => "The pros and cons of programming naked.")
     assert !topic.respond_to?(:title)
     exception = assert_raise(NoMethodError) { topic.title }
-    assert_equal "Attempt to call private method", exception.message
+    assert_match %r(^Attempt to call private method), exception.message
     assert_equal "I'm private", topic.send(:title)
   end
 
@@ -556,7 +609,7 @@ class AttributeMethodsTest < ActiveRecord::TestCase
     topic = @target.new
     assert !topic.respond_to?(:title=)
     exception = assert_raise(NoMethodError) { topic.title = "Pants"}
-    assert_equal "Attempt to call private method", exception.message
+    assert_match %r(^Attempt to call private method), exception.message
     topic.send(:title=, "Very large pants")
   end
 
@@ -566,14 +619,14 @@ class AttributeMethodsTest < ActiveRecord::TestCase
     topic = @target.new(:title => "Isaac Newton's pants")
     assert !topic.respond_to?(:title?)
     exception = assert_raise(NoMethodError) { topic.title? }
-    assert_equal "Attempt to call private method", exception.message
+    assert_match %r(^Attempt to call private method), exception.message
     assert topic.send(:title?)
   end
 
   def test_bulk_update_respects_access_control
     privatize("title=(value)")
 
-    assert_raise(ActiveRecord::UnknownAttributeError) { topic = @target.new(:title => "Rants about pants") }
+    assert_raise(ActiveRecord::UnknownAttributeError) { @target.new(:title => "Rants about pants") }
     assert_raise(ActiveRecord::UnknownAttributeError) { @target.new.attributes = { :title => "Ants in pants" } }
   end
 
@@ -592,10 +645,22 @@ class AttributeMethodsTest < ActiveRecord::TestCase
     Object.send(:undef_method, :title) # remove test method from object
   end
 
+  def test_list_of_serialized_attributes
+    assert_equal %w(content), Topic.serialized_attributes.keys
+    assert_equal %w(preferences), Contact.serialized_attributes.keys
+  end
 
   private
+  def cached_columns
+    @cached_columns ||= (time_related_columns_on_topic + serialized_columns_on_topic).map(&:name)
+  end
+
   def time_related_columns_on_topic
-    Topic.columns.select{|c| [:time, :date, :datetime, :timestamp].include?(c.type)}.map(&:name)
+    Topic.columns.select { |c| c.type.in?([:time, :date, :datetime, :timestamp]) }
+  end
+
+  def serialized_columns_on_topic
+    Topic.columns.select { |c| Topic.serialized_attributes.include?(c.name) }
   end
 
   def in_time_zone(zone)

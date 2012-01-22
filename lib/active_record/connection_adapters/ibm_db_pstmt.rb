@@ -177,7 +177,7 @@ module ActiveRecord
       end
 
       pstmt = connection.prepare(statement, "#{self.class.name} Create")
-      self.id = connection.prepared_insert(pstmt, quoted_attributes.values)
+      self.id = connection.prepared_insert(pstmt, quoted_attributes.values, self.id)
 
       @new_record = false
       id

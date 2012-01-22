@@ -2,7 +2,7 @@
   +----------------------------------------------------------------------+
   |  Licensed Materials - Property of IBM                                |
   |                                                                      |
-  | (C) Copyright IBM Corporation 2006, 2007, 2008, 2009, 2010           |
+  | (C) Copyright IBM Corporation 2006, 2007, 2008, 2009, 2010, 2012     |
   +----------------------------------------------------------------------+
   | Authors: Sushant Koduru, Lynh Nguyen, Kanchana Padmanabhan,          |
   |          Dan Scott, Helmut Tessarek, Kellen Bombardier, Sam Ruby     |
@@ -135,6 +135,9 @@ void Init_ibm_db();
 /* Function Declarations */
 
 VALUE ibm_db_connect(int argc, VALUE *argv, VALUE self);
+VALUE ibm_db_createDB(int argc, VALUE *argv, VALUE self);
+VALUE ibm_db_dropDB(int argc, VALUE *argv, VALUE self);
+VALUE ibm_db_createDBNX(int argc, VALUE *argv, VALUE self);
 VALUE ibm_db_commit(int argc, VALUE *argv, VALUE self);
 VALUE ibm_db_pconnect(int argc, VALUE *argv, VALUE self);
 VALUE ibm_db_autocommit(int argc, VALUE *argv, VALUE self);

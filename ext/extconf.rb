@@ -7,7 +7,7 @@
 # +----------------------------------------------------------------------+
 
 require 'mkmf'
-WIN = RUBY_PLATFORM =~ /mswin/
+WIN = RUBY_PLATFORM =~ /mswin/ || RUBY_PLATFORM =~ /mingw/
 
 # use ENV['DB2DIR'] or latest db2 you can find
 # (we need to revisit default when db2 10.x comes out)

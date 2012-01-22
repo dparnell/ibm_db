@@ -12,7 +12,7 @@
   +----------------------------------------------------------------------+
 */
 
-#define MODULE_RELEASE "2.5.6"
+#define MODULE_RELEASE "2.5.9"
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -42,6 +42,7 @@ static void _ruby_ibm_db_clear_stmt_err_cache();
 static int  _ruby_ibm_db_set_decfloat_rounding_mode_client(SQLHANDLE hdbc);
 static char *_ruby_ibm_db_instance_name;
 static int  is_systemi, is_informix;        /* 1 == TRUE; 0 == FALSE; */
+static int  createDbSupported, dropDbSupported; /*1 == TRUE; 0 == FALSE*/
 
 /* Strucure holding the necessary data to be passed to bind the list of elements passed to the execute function*/
 typedef struct _stmt_bind_data_array {
@@ -188,6 +189,9 @@ void Init_ibm_db(void) {
   mDB = rb_define_module("IBM_DB");
 
   rb_define_module_function(mDB, "connect", ibm_db_connect, -1);
+  rb_define_module_function(mDB, "createDB", ibm_db_createDB, -1);
+  rb_define_module_function(mDB, "dropDB", ibm_db_dropDB, -1);
+  rb_define_module_function(mDB, "createDBNX", ibm_db_createDBNX, -1);
   rb_define_module_function(mDB, "commit", ibm_db_commit, -1);
   rb_define_module_function(mDB, "pconnect", ibm_db_pconnect, -1);
   rb_define_module_function(mDB, "autocommit", ibm_db_autocommit, -1);
@@ -324,6 +328,54 @@ void Init_ibm_db(void) {
 /*Load necessary libraries*/
 static void ruby_ibm_db_load_necessary_libs() {
   rb_eval_string("require \'bigdecimal\'");
+}
+
+#ifdef _WIN32
+static void ruby_ibm_db_check_sqlcreatedb(HINSTANCE cliLib) {
+   FARPROC sqlcreatedb;
+   sqlcreatedb =  DLSYM( cliLib, "SQLCreateDbW" );
+#else
+static void ruby_ibm_db_check_sqlcreatedb(void *cliLib) {
+   typedef int (*sqlcreatedbType)( SQLHDBC, SQLWCHAR *, SQLINTEGER, SQLWCHAR *, SQLINTEGER, SQLWCHAR *, SQLINTEGER );
+   sqlcreatedbType sqlcreatedb;
+   sqlcreatedb = (sqlcreatedbType) DLSYM( cliLib, "SQLCreateDbW" );
+#endif
+     if ( sqlcreatedb == NULL )  {
+        createDbSupported = 0;
+        dropDbSupported   = 0;
+	 } else {
+        createDbSupported = 1;
+        dropDbSupported   = 1;
+	 }
+}
+/*Check if specific functions are supported or not based on CLI being used
+ * For Eg: SQLCreateDB and SQLDropDB is supported only from V97fp3 onwards. In this function we open the CLI library 
+ * using DLOpen and check if the function is defined. If yes then we allow the user to use the function, 
+ * else throw a warning saying this is not supported 
+ */
+static void ruby_ibm_db_check_if_cli_func_supported() {
+#ifdef _WIN32
+   HINSTANCE cliLib = NULL;
+#else
+   void *cliLib = NULL;
+#endif
+
+#ifdef _WIN32
+    cliLib = DLOPEN( LIBDB2 );
+#elif _AIX
+/* On AIX CLI library is in archive. Hence we will need to specify flags in DLOPEN to load a member of the archive*/
+    cliLib = DLOPEN( LIBDB2, RTLD_MEMBER | RTLD_LAZY );
+#else
+    cliLib = DLOPEN( LIBDB2, RTLD_LAZY );
+#endif
+  if ( !cliLib ) {
+    rb_warn("Could not load CLI library to check functionality support");
+    createDbSupported = 0;
+    dropDbSupported   = 0;
+    return;
+  }
+  ruby_ibm_db_check_sqlcreatedb(cliLib);
+  DLCLOSE( cliLib );
 }
 
 static void ruby_ibm_db_init_globals(struct _ibm_db_globals *ibm_db_globals)
@@ -848,6 +900,8 @@ void ruby_init_ibm_db()
   rb_attr(le_server_info, rb_intern("NON_NULLABLE_COLUMNS"), 1, 0, 0);
 
   ruby_ibm_db_load_necessary_libs();
+
+  ruby_ibm_db_check_if_cli_func_supported();
 }
 /*  */
 
@@ -932,7 +986,7 @@ static void _ruby_ibm_db_check_sql_errors( void *conn_or_stmt, int resourceType,
 
   if( release_gil == 1 ){
 
-    #ifdef GIL_RELEASE_VERSION
+    #ifdef UNICODE_SUPPORT_VERSION
       return_code  =  rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLGetDiagRec_helper, get_DiagRec_args,
                                 (void *)_ruby_ibm_db_Connection_level_UBF, NULL);
     #else
@@ -1042,6 +1096,7 @@ static void _ruby_ibm_db_check_sql_errors( void *conn_or_stmt, int resourceType,
               strncpy(conn_res->ruby_error_msg, (char*)errMsg, length );
 #endif
               conn_res->ruby_error_msg_len  =  length;
+              conn_res->sqlcode             =  sqlcode;
               break;
 
             case SQL_HANDLE_STMT:
@@ -1082,6 +1137,7 @@ static void _ruby_ibm_db_check_sql_errors( void *conn_or_stmt, int resourceType,
                   strncpy(conn_res->ruby_error_msg, (char*)errMsg, length );
 #endif
                   conn_res->ruby_error_msg_len  =  length;
+                  conn_res->sqlcode             =  sqlcode;
                   break;
 
                 case DB_STMT:
@@ -1119,6 +1175,7 @@ static void _ruby_ibm_db_check_sql_errors( void *conn_or_stmt, int resourceType,
                   strncpy(stmt_res->ruby_stmt_err_msg, (char*)errMsg, length );
 #endif
                   stmt_res->ruby_stmt_err_msg_len  =  length;
+                  stmt_res->sqlcode                =  sqlcode;
                   break; 
 
               }  /*End of switch( resourceType )*/
@@ -2435,7 +2492,7 @@ static VALUE _ruby_ibm_db_connect_helper( int argc, VALUE *argv, int isPersisten
   }
 
   /* Call the function where the actual logic is being run*/
-  #ifdef GIL_RELEASE_VERSION
+  #ifdef UNICODE_SUPPORT_VERSION
     return_value = rb_thread_blocking_region( (void *)_ruby_ibm_db_connect_helper2, helper_args,
                              (void *)_ruby_ibm_db_Connection_level_UBF, NULL);
   #else
@@ -2776,6 +2833,366 @@ VALUE ibm_db_pconnect(int argc, VALUE *argv, VALUE self)
 
   return _ruby_ibm_db_connect_helper( argc, argv, 1);
 }
+/*
+ * CreateDB helper
+ */
+VALUE ruby_ibm_db_createDb_helper(VALUE connection, VALUE dbName, VALUE codeSet, VALUE mode, int createNX) {
+  
+  VALUE return_value    =  Qfalse;
+#ifdef UNICODE_SUPPORT_VERSION
+  VALUE dbName_utf16    = Qnil;
+  VALUE codeSet_utf16   = Qnil;
+  VALUE mode_utf16      = Qnil;
+#endif
+
+  int rc;
+
+  create_drop_db_args *create_db_args = NULL;
+  conn_handle *conn_res;
+
+  if (!NIL_P(connection)) {
+    Data_Get_Struct(connection, conn_handle, conn_res);
+
+	if( 0 == createDbSupported ) {
+      rb_warn("Create Database not supported: This function is only supported from DB2 Client v97fp4 version and onwards");
+	  return Qfalse;
+    }
+
+    if (!conn_res->handle_active) {
+      rb_warn("Connection is not active");
+      return Qfalse;
+    }
+
+	if (!NIL_P(dbName)) {
+      create_db_args = ALLOC( create_drop_db_args );
+	  memset(create_db_args,'\0',sizeof(struct _ibm_db_create_drop_db_args_struct));
+
+#ifdef UNICODE_SUPPORT_VERSION
+      dbName_utf16               =  _ruby_ibm_db_export_str_to_utf16(dbName);
+
+	  create_db_args->dbName     =  (SQLWCHAR*)RSTRING_PTR(dbName_utf16);
+      create_db_args->dbName_string_len =  RSTRING_LEN(dbName_utf16)/sizeof(SQLWCHAR); /*RSTRING_LEN returns number of bytes*/
+
+	  if(!NIL_P(codeSet)){
+        codeSet_utf16            =  _ruby_ibm_db_export_str_to_utf16(codeSet); 
+        create_db_args->codeSet  =  (SQLWCHAR*)RSTRING_PTR(codeSet_utf16);
+        create_db_args->codeSet_string_len =  RSTRING_LEN(codeSet_utf16)/sizeof(SQLWCHAR); /*RSTRING_LEN returns number of bytes*/
+	  } else {
+        create_db_args->codeSet  =  NULL;
+	  }
+
+	  if(!NIL_P(mode)) {
+	    mode_utf16               =  _ruby_ibm_db_export_str_to_utf16(mode);
+		create_db_args->mode     =  (SQLWCHAR*)RSTRING_PTR(mode_utf16);
+        create_db_args->mode_string_len =  RSTRING_LEN(mode_utf16)/sizeof(SQLWCHAR); /*RSTRING_LEN returns number of bytes*/
+	  } else {
+        create_db_args->mode     =  NULL;
+	  }
+#else
+      create_db_args->dbName     = (SQLCHAR*)rb_str2cstr(dbName, &(create_db_args->dbName_string_len));
+	  if(!NIL_P(codeSet)){
+        create_db_args->codeSet  = (SQLCHAR*)rb_str2cstr(codeSet, &(create_db_args->codeSet_string_len));
+	  } else {
+        create_db_args->codeSet  = NULL;
+	  }
+	  if(!NIL_P(mode)) {
+        create_db_args->mode     = (SQLCHAR*)rb_str2cstr(mode, &(create_db_args->mode_string_len));
+	  } else {
+        create_db_args->mode     = NULL;
+	  }
+#endif
+	} else {
+		rb_warn("Invalid Parameter: Database Name cannot be nil");
+		return Qfalse;
+	}
+
+	create_db_args->conn_res = conn_res;
+
+	_ruby_ibm_db_clear_conn_err_cache();
+
+#ifdef UNICODE_SUPPORT_VERSION
+        rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLCreateDB_helper, create_db_args,
+                       (void *)_ruby_ibm_db_Connection_level_UBF, NULL );
+#else
+        rc = _ruby_ibm_db_SQLCreateDB_helper( create_db_args );
+#endif
+
+      if ( rc == SQL_ERROR ) {
+        conn_res->error_recno_tracker    =  1;
+        conn_res->errormsg_recno_tracker =  1;
+        _ruby_ibm_db_check_sql_errors( conn_res, DB_CONN, conn_res->hdbc, SQL_HANDLE_DBC, rc, 1, NULL, NULL, -1, 1, 0 );
+		if(conn_res->sqlcode == -1005 && 1 == createNX) {
+          return_value = Qtrue; /*Return true if database already exists and Create if not existing called*/
+		  /*Clear the error messages*/
+#ifdef UNICODE_SUPPORT_VERSION
+          memset( conn_res->ruby_error_state, '\0', (SQL_SQLSTATE_SIZE + 1) * sizeof(SQLWCHAR) );
+          memset( conn_res->ruby_error_msg, '\0', (DB2_MAX_ERR_MSG_LEN + 1) * sizeof(SQLWCHAR) );
+#else
+          memset( conn_res->ruby_error_state, '\0', SQL_SQLSTATE_SIZE + 1 );
+          memset( conn_res->ruby_error_msg, '\0', DB2_MAX_ERR_MSG_LEN + 1 );
+#endif
+		} else {
+          return_value = Qfalse;
+		}
+      } else {
+        return_value = Qtrue;
+      }
+  }
+
+  /*Free memory allocated*/
+  if( create_db_args != NULL ) {
+    ruby_xfree( create_db_args );
+    create_db_args = NULL;
+  }
+
+  return return_value;  
+}
+/*  */
+/*
+ * IBM_DB.createDB -- Creates a Database
+ *
+ * ===Description
+ * bool IBM_DB.createDB ( resource connection , string dbName [, String codeSet, String mode] )
+ *
+ * Creates a database with the specified name. Returns true if operation successful else false
+ *
+ * ===Parameters
+ * 
+ * connection
+ *     A valid database connection resource variable as returned from IBM_DB.connect() or IBM_DB.pconnect() with parameter ATTACH=true specified.
+ *     IBM_DB.connect('DRIVER={IBM DB2 ODBC DRIVER};ATTACH=true;HOSTNAME=myhost;PORT=1234;PROTOCOL=TCPIP;UID=user;PWD=secret;','','')
+ *     Note: Database is not specified. In this case we connect to the instance only.
+ *
+ * dbName
+ *     Name of the database that is to be created.
+ *
+ * codeSet
+ *      Database code set information.
+ *      Note: If the value of the codeSet argument is not specified, 
+ *      the database is created in the Unicode code page for DB2 data servers and in the UTF-8 code page for IDS data servers
+ *
+ * mode
+ *      Database logging mode.
+ *      Note: This value is applicable only to IDS data servers
+ *
+ * ===Return Values
+ * 
+ * Returns TRUE on success or FALSE on failure. 
+ */
+VALUE ibm_db_createDB(int argc, VALUE *argv, VALUE self)
+{
+  VALUE connection   = Qnil;
+  VALUE dbName       = Qnil;
+  VALUE codeSet      = Qnil;
+  VALUE mode         = Qnil;
+
+  rb_scan_args(argc, argv, "22", &connection, &dbName, &codeSet, &mode);
+
+  return ruby_ibm_db_createDb_helper(connection, dbName, codeSet, mode, 0);  
+}
+/*
+ *  DropDb helper
+ */
+VALUE ruby_ibm_db_dropDb_helper(VALUE connection, VALUE dbName) {
+#ifdef UNICODE_SUPPORT_VERSION
+  VALUE dbName_utf16    = Qnil;
+#endif
+
+  VALUE return_value =  Qfalse;
+
+  int rc;
+
+  create_drop_db_args *drop_db_args = NULL;
+  conn_handle         *conn_res     = NULL;
+
+  if (!NIL_P(connection)) {
+    Data_Get_Struct(connection, conn_handle, conn_res);
+
+	if( 0 == dropDbSupported ) {
+      rb_warn("Drop Database not supported: This function is only supported from DB2 Client v97fp4 version and onwards");
+	  return Qfalse;
+    }
+
+    if (!conn_res->handle_active) {
+      rb_warn("Connection is not active");
+      return Qfalse;
+    }
+
+	if (!NIL_P(dbName)) {
+      drop_db_args = ALLOC( create_drop_db_args );
+	  memset(drop_db_args,'\0',sizeof(struct _ibm_db_create_drop_db_args_struct));
+
+#ifdef UNICODE_SUPPORT_VERSION
+      dbName_utf16             =  _ruby_ibm_db_export_str_to_utf16(dbName);
+
+	  drop_db_args->dbName     =  (SQLWCHAR*)RSTRING_PTR(dbName_utf16);
+      drop_db_args->dbName_string_len =  RSTRING_LEN(dbName_utf16)/sizeof(SQLWCHAR); /*RSTRING_LEN returns number of bytes*/
+#else
+      drop_db_args->dbName     =  (SQLCHAR*)rb_str2cstr(dbName, &(drop_db_args->dbName_string_len));
+#endif
+	} else {
+		rb_warn("Invalid Parameter: Database Name cannot be nil");
+		return Qfalse;
+	}
+
+	drop_db_args->conn_res = conn_res;
+
+	_ruby_ibm_db_clear_conn_err_cache();
+
+#ifdef UNICODE_SUPPORT_VERSION
+        rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLDropDB_helper, drop_db_args,
+                       (void *)_ruby_ibm_db_Connection_level_UBF, NULL );
+#else
+        rc = _ruby_ibm_db_SQLDropDB_helper( drop_db_args );
+#endif
+
+      if ( rc == SQL_ERROR ) {
+        conn_res->error_recno_tracker    =  1;
+        conn_res->errormsg_recno_tracker =  1;
+        _ruby_ibm_db_check_sql_errors( conn_res, DB_CONN, conn_res->hdbc, SQL_HANDLE_DBC, rc, 1, NULL, NULL, -1, 1, 0 );
+        return_value = Qfalse;
+      } else {
+        return_value = Qtrue;
+      }
+  }
+
+  /*Free memory allocated*/
+  if( drop_db_args != NULL ) {
+    ruby_xfree( drop_db_args );
+    drop_db_args = NULL;
+  }
+
+  return return_value;  
+}
+/*  */
+/*
+ * IBM_DB.dropDB -- Drops the mentioned Database
+ *
+ * ===Description
+ * bool IBM_DB.dropDB ( resource connection , string dbName [, String codeSet, String mode] )
+ *
+ * Drops a database with the specified name. Returns true if operation successful else false
+ *
+ * ===Parameters
+ * 
+ * connection
+ *     A valid database connection resource variable as returned from IBM_DB.connect() or IBM_DB.pconnect() with parameter ATTACH=true specified.
+ *     IBM_DB.connect('DRIVER={IBM DB2 ODBC DRIVER};ATTACH=true;HOSTNAME=myhost;PORT=1234;PROTOCOL=TCPIP;UID=user;PWD=secret;','','')
+ *     Note: Database is not specified. In this case we connect to the instance only.
+ * dbName
+ *     Name of the database that is to be created.
+ *
+ * ===Return Values
+ * 
+ * Returns TRUE on success or FALSE on failure. 
+ */
+VALUE ibm_db_dropDB(int argc, VALUE *argv, VALUE self)
+{
+  VALUE connection      = Qnil;
+  VALUE dbName          = Qnil;
+
+  rb_scan_args(argc, argv, "2", &connection, &dbName);
+
+  return ruby_ibm_db_dropDb_helper(connection, dbName);
+}
+/*  */
+/*
+ * IBM_DB.recreateDB -- Recreates an Existing database
+ *
+ * ===Description
+ * bool IBM_DB.recreateDB ( resource connection , string dbName [, String codeSet, String mode] )
+ *
+ * Recreates a database with the specified name. This method will drop an existing database and then re-create it.
+ * If database doesnot exist the method will return false.
+ * Returns true if operation successful else false
+ *
+ * ===Parameters
+ * 
+ * connection
+ *     A valid database connection resource variable as returned from IBM_DB.connect() or IBM_DB.pconnect() with parameter ATTACH=true specified.
+ *     IBM_DB.connect('DRIVER={IBM DB2 ODBC DRIVER};ATTACH=true;HOSTNAME=myhost;PORT=1234;PROTOCOL=TCPIP;UID=user;PWD=secret;','','')
+ *     Note: Database is not specified. In this case we connect to the instance only.
+ *
+ * dbName
+ *     Name of the database that is to be created.
+ *
+ * codeSet
+ *      Database code set information.
+ *      Note: If the value of the codeSet argument is not specified, 
+ *      the database is created in the Unicode code page for DB2 data servers and in the UTF-8 code page for IDS data servers
+ *
+ * mode
+ *      Database logging mode.
+ *      Note: This value is applicable only to IDS data servers
+ *
+ * ===Return Values
+ * 
+ * Returns TRUE on success or FALSE on failure. 
+ */
+/*VALUE ibm_db_recreateDB(int argc, VALUE *argv, VALUE self)
+{
+  VALUE connection   = Qnil;
+  VALUE dbName       = Qnil;
+  VALUE codeSet      = Qnil;
+  VALUE mode         = Qnil;
+  VALUE return_value = Qnil;
+
+  rb_scan_args(argc, argv, "22", &connection, &dbName, &codeSet, &mode);
+
+  return_value = ruby_ibm_db_dropDb_helper(connection, dbName);
+
+  if(return_value == Qfalse) {
+    return Qfalse;
+  }
+
+  return ruby_ibm_db_createDb_helper(connection, dbName, codeSet, mode);  
+}*/
+/*  */
+/*
+ * IBM_DB.createDBNX -- creates a database if it does not exist aleady
+ *
+ * ===Description
+ * bool IBM_DB.createDBNX ( resource connection , string dbName [, String codeSet, String mode] )
+ *
+ * Creates a database with the specified name, if it does not exist already. This method will drop an existing database and then re-create it.
+ * If database doesnot exist the method will return false.
+ * Returns true if operation successful else false
+ *
+ * ===Parameters
+ * 
+ * connection
+ *     A valid database connection resource variable as returned from IBM_DB.connect() or IBM_DB.pconnect() with parameter ATTACH=true specified.
+ *     IBM_DB.connect('DRIVER={IBM DB2 ODBC DRIVER};ATTACH=true;HOSTNAME=myhost;PORT=1234;PROTOCOL=TCPIP;UID=user;PWD=secret;','','')
+ *     Note: Database is not specified. In this case we connect to the instance only.
+ *
+ * dbName
+ *     Name of the database that is to be created.
+ *
+ * codeSet
+ *      Database code set information.
+ *      Note: If the value of the codeSet argument is not specified, 
+ *      the database is created in the Unicode code page for DB2 data servers and in the UTF-8 code page for IDS data servers
+ *
+ * mode
+ *      Database logging mode.
+ *      Note: This value is applicable only to IDS data servers
+ *
+ * ===Return Values
+ * 
+ * Returns TRUE on success or FALSE on failure. 
+ */
+VALUE ibm_db_createDBNX(int argc, VALUE *argv, VALUE self)
+{
+  VALUE connection   = Qnil;
+  VALUE dbName       = Qnil;
+  VALUE codeSet      = Qnil;
+  VALUE mode         = Qnil;
+  VALUE return_value = Qnil;
+
+  rb_scan_args(argc, argv, "22", &connection, &dbName, &codeSet, &mode);
+
+  return ruby_ibm_db_createDb_helper(connection, dbName, codeSet, mode, 1);  
+}
 /*  */
 
 /*
@@ -2984,7 +3401,7 @@ VALUE ibm_db_bind_param_helper(int argc, char * varname, long varname_len ,long 
     case 3:
       param_type = SQL_PARAM_INPUT;
 
-      #ifdef GIL_RELEASE_VERSION
+      #ifdef UNICODE_SUPPORT_VERSION
         rc  =  rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLDescribeParam_helper, data,
                          (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res);
       #else
@@ -3004,7 +3421,7 @@ VALUE ibm_db_bind_param_helper(int argc, char * varname, long varname_len ,long 
 
     case 4:
 
-      #ifdef GIL_RELEASE_VERSION
+      #ifdef UNICODE_SUPPORT_VERSION
         rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLDescribeParam_helper, data,
                        (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res);
       #else
@@ -3024,7 +3441,7 @@ VALUE ibm_db_bind_param_helper(int argc, char * varname, long varname_len ,long 
 
     case 5:
 
-      #ifdef GIL_RELEASE_VERSION
+      #ifdef UNICODE_SUPPORT_VERSION
         rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLDescribeParam_helper, data,
                        (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
       #else
@@ -3045,7 +3462,7 @@ VALUE ibm_db_bind_param_helper(int argc, char * varname, long varname_len ,long 
 
     case 6:
 
-      #ifdef GIL_RELEASE_VERSION
+      #ifdef UNICODE_SUPPORT_VERSION
         rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLDescribeParam_helper, data,
                        (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
       #else
@@ -3277,7 +3694,7 @@ VALUE ibm_db_close(int argc, VALUE *argv, VALUE self)
         end_X_args->handleType      =  SQL_HANDLE_DBC;
         end_X_args->completionType  =  SQL_ROLLBACK;        /*Remeber you are rolling back the transaction*/
 
-        #ifdef GIL_RELEASE_VERSION
+        #ifdef UNICODE_SUPPORT_VERSION
           rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLEndTran, end_X_args,
                          (void *)_ruby_ibm_db_Connection_level_UBF, NULL);
         #else
@@ -3295,7 +3712,7 @@ VALUE ibm_db_close(int argc, VALUE *argv, VALUE self)
         }
       }
 
-      #ifdef GIL_RELEASE_VERSION
+      #ifdef UNICODE_SUPPORT_VERSION
         rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLDisconnect_helper, &(conn_res->hdbc),
                        (void *)_ruby_ibm_db_Connection_level_UBF, NULL);
       #else
@@ -3472,7 +3889,7 @@ VALUE ibm_db_column_privileges(int argc, VALUE *argv, VALUE self)
           }
           col_privileges_args->stmt_res  =  stmt_res;
 
-          #ifdef GIL_RELEASE_VERSION
+          #ifdef UNICODE_SUPPORT_VERSION
             rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLColumnPrivileges_helper, col_privileges_args,
                            (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
           #else
@@ -3652,7 +4069,7 @@ VALUE ibm_db_columns(int argc, VALUE *argv, VALUE self)
         }
         col_metadata_args->stmt_res  =  stmt_res;
 
-        #ifdef GIL_RELEASE_VERSION
+        #ifdef UNICODE_SUPPORT_VERSION
           rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLColumns_helper, col_metadata_args,
                          (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
         #else
@@ -3818,7 +4235,7 @@ VALUE ibm_db_foreign_keys(int argc, VALUE *argv, VALUE self)
 
         col_metadata_args->stmt_res  =  stmt_res;
 
-        #ifdef GIL_RELEASE_VERSION
+        #ifdef UNICODE_SUPPORT_VERSION
           rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLForeignKeys_helper, col_metadata_args,
                          (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
         #else
@@ -3974,7 +4391,7 @@ VALUE ibm_db_primary_keys(int argc, VALUE *argv, VALUE self)
         }
         col_metadata_args->stmt_res  =  stmt_res;
 
-        #ifdef GIL_RELEASE_VERSION
+        #ifdef UNICODE_SUPPORT_VERSION
           rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLPrimaryKeys_helper, col_metadata_args,
                          (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
         #else
@@ -4165,7 +4582,7 @@ VALUE ibm_db_procedure_columns(int argc, VALUE *argv, VALUE self)
         }
         col_metadata_args->stmt_res  =  stmt_res;
 
-        #ifdef GIL_RELEASE_VERSION
+        #ifdef UNICODE_SUPPORT_VERSION
           rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLProcedureColumns_helper, col_metadata_args,
                          (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res);
         #else
@@ -4322,7 +4739,7 @@ VALUE ibm_db_procedures(int argc, VALUE *argv, VALUE self)
         }
         proc_metadata_args->stmt_res     =  stmt_res;
 
-        #ifdef GIL_RELEASE_VERSION
+        #ifdef UNICODE_SUPPORT_VERSION
           rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLProcedures_helper, proc_metadata_args,
                          (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res);
         #else
@@ -4499,7 +4916,7 @@ VALUE ibm_db_special_columns(int argc, VALUE *argv, VALUE self)
         }
         col_metadata_args->stmt_res       =  stmt_res;
 
-        #ifdef GIL_RELEASE_VERSION
+        #ifdef UNICODE_SUPPORT_VERSION
           rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLSpecialColumns_helper, col_metadata_args,
                          (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res);
         #else
@@ -4694,7 +5111,7 @@ VALUE ibm_db_statistics(int argc, VALUE *argv, VALUE self)
         }
         col_metadata_args->stmt_res      =  stmt_res;
 
-        #ifdef GIL_RELEASE_VERSION
+        #ifdef UNICODE_SUPPORT_VERSION
           rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLStatistics_helper, col_metadata_args,
                          (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
         #else
@@ -4853,7 +5270,7 @@ VALUE ibm_db_table_privileges(int argc, VALUE *argv, VALUE self)
 
         table_privileges_args->stmt_res       =  stmt_res;
 
-        #ifdef GIL_RELEASE_VERSION
+        #ifdef UNICODE_SUPPORT_VERSION
           rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLTablePrivileges_helper, table_privileges_args,
                          (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
         #else
@@ -5027,7 +5444,7 @@ VALUE ibm_db_tables(int argc, VALUE *argv, VALUE self)
 
         table_metadata_args->stmt_res      =  stmt_res;
 
-        #ifdef GIL_RELEASE_VERSION
+        #ifdef UNICODE_SUPPORT_VERSION
           rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLTables_helper, table_metadata_args,
                          (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
         #else
@@ -5109,7 +5526,7 @@ VALUE ibm_db_commit(int argc, VALUE *argv, VALUE self)
     end_X_args->handleType      =  SQL_HANDLE_DBC;
     end_X_args->completionType  =  SQL_COMMIT;        /*Remeber you are Commiting the transaction*/
 
-    #ifdef GIL_RELEASE_VERSION
+    #ifdef UNICODE_SUPPORT_VERSION
       rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLEndTran, end_X_args,
                      (void *)_ruby_ibm_db_Connection_level_UBF, NULL);
     #else
@@ -5189,7 +5606,7 @@ static int _ruby_ibm_db_do_prepare(conn_handle *conn_res, VALUE stmt, stmt_handl
     prepare_args->stmt_res    =  stmt_res;
 
     /* Prepare the stmt. The cursor type requested has already been set in _ruby_ibm_db_assign_options */
-    #ifdef GIL_RELEASE_VERSION
+    #ifdef UNICODE_SUPPORT_VERSION
       rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLPrepare_helper, prepare_args,
                      (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
     #else
@@ -5197,7 +5614,7 @@ static int _ruby_ibm_db_do_prepare(conn_handle *conn_res, VALUE stmt, stmt_handl
     #endif
 
     if ( rc == SQL_ERROR ) {
-      _ruby_ibm_db_check_sql_errors( conn_res, DB_CONN, stmt_res->hstmt, SQL_HANDLE_STMT, rc, 0, 
+      _ruby_ibm_db_check_sql_errors( conn_res, DB_CONN, stmt_res->hstmt, SQL_HANDLE_STMT, rc, 1, 
                 NULL, NULL, -1, 1, 1 );
     }
   }
@@ -5327,7 +5744,7 @@ VALUE ibm_db_exec(int argc, VALUE *argv, VALUE self)
 
       exec_direct_args->stmt_res    =  stmt_res;
 
-      #ifdef GIL_RELEASE_VERSION
+      #ifdef UNICODE_SUPPORT_VERSION
         rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLExecDirect_helper, exec_direct_args,
                        (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
       #else
@@ -5402,7 +5819,7 @@ VALUE ibm_db_free_result(int argc, VALUE *argv, VALUE self)
       freeStmt_args->stmt_res  =  stmt_res;
       freeStmt_args->option    =  SQL_CLOSE;
 
-      #ifdef GIL_RELEASE_VERSION
+      #ifdef UNICODE_SUPPORT_VERSION
         rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLFreeStmt_helper, freeStmt_args, 
                        (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
       #else
@@ -6381,7 +6798,8 @@ static VALUE _ruby_ibm_db_execute_helper(stmt_bind_array *bind_array) {
 
     put_param_data_args->stmt_res  =  stmt_res;
 
-    while ( _ruby_ibm_db_SQLParamData_helper( put_param_data_args ) == SQL_NEED_DATA ) {
+    rc = _ruby_ibm_db_SQLParamData_helper( put_param_data_args );
+    while ( rc == SQL_NEED_DATA ) {
 
       /* passing data value for a parameter */
       rc  = _ruby_ibm_db_SQLPutData_helper(put_param_data_args);
@@ -6412,13 +6830,37 @@ static VALUE _ruby_ibm_db_execute_helper(stmt_bind_array *bind_array) {
 
         return Qnil;
       }
+	  rc = _ruby_ibm_db_SQLParamData_helper( put_param_data_args );
     }
 
     if (put_param_data_args != NULL) {
       ruby_xfree( put_param_data_args );
       put_param_data_args = NULL;
     }
+
+    if ( rc == SQL_ERROR ) {
+        _ruby_ibm_db_check_sql_errors( stmt_res, DB_STMT, stmt_res->hstmt, SQL_HANDLE_STMT, rc, 1, NULL, NULL, -1, 1, 0 );
+      if( stmt_res != NULL && stmt_res->ruby_stmt_err_msg != NULL ) {
+#ifdef UNICODE_SUPPORT_VERSION
+        *error = rb_str_concat( _ruby_ibm_db_export_char_to_utf8_rstr( "Sending data failed: "),
+                   _ruby_ibm_db_export_sqlwchar_to_utf8_rstr( stmt_res->ruby_stmt_err_msg,
+                                  stmt_res->ruby_stmt_err_msg_len )
+                 );
+#else
+        *error = rb_str_cat2(rb_str_new2("Sending data failed: "), stmt_res->ruby_stmt_err_msg );
+#endif
+      } else {
+#ifdef UNICODE_SUPPORT_VERSION
+        *error = _ruby_ibm_db_export_char_to_utf8_rstr("Sending data failed: <error message could not be retrieved>");
+#else
+        *error = rb_str_new2("Sending data failed: <error message could not be retrieved>");
+#endif
+      }
+
+      return Qnil;
+    }
   }
+
   return Qtrue;
 }
 /*
@@ -6482,7 +6924,7 @@ VALUE ibm_db_execute(int argc, VALUE *argv, VALUE self)
     bind_array->num               =  0;
     bind_array->error             =  &error;
 
-    #ifdef GIL_RELEASE_VERSION
+    #ifdef UNICODE_SUPPORT_VERSION
       ret_value = rb_thread_blocking_region( (void *)_ruby_ibm_db_execute_helper, bind_array,
                             (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
     #else
@@ -6642,7 +7084,7 @@ VALUE ibm_db_conn_errormsg(int argc, VALUE *argv, VALUE self)
 
   rb_scan_args(argc, argv, "01", &connection);
 
-  rb_warn("Method conn_errormsg is deprecated, use getErrormsg");
+  /*rb_warn("Method conn_errormsg is deprecated, use getErrormsg");*/
 
   if (!NIL_P(connection)) {
     Data_Get_Struct(connection, conn_handle, conn_res);
@@ -6796,7 +7238,7 @@ VALUE ibm_db_conn_error(int argc, VALUE *argv, VALUE self)
 
   rb_scan_args(argc, argv, "01", &connection);
 
-  rb_warn("Method conn_error is deprecated, use getErrorstate");
+  /*rb_warn("Method conn_error is deprecated, use getErrorstate");*/
 
   if (!NIL_P(connection)) {
     Data_Get_Struct(connection, conn_handle, conn_res);
@@ -7267,7 +7709,7 @@ VALUE ibm_db_next_result(int argc, VALUE *argv, VALUE self)
       nextresultparams->stmt_res  =  stmt_res;
       nextresultparams->new_hstmt =  &new_hstmt;
 
-      #ifdef GIL_RELEASE_VERSION
+      #ifdef UNICODE_SUPPORT_VERSION
         rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLNextResult_helper, nextresultparams,
                        (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
       #else
@@ -7366,7 +7808,7 @@ VALUE ibm_db_num_fields(int argc, VALUE *argv, VALUE self)
     result_cols_args->stmt_res  =  stmt_res;
     result_cols_args->count     =  0;
 
-    #ifdef GIL_RELEASE_VERSION
+    #ifdef UNICODE_SUPPORT_VERSION
       rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLNumResultCols_helper, result_cols_args,
                      (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
     #else
@@ -7459,7 +7901,7 @@ VALUE ibm_db_num_rows(int argc, VALUE *argv, VALUE self)
     row_count_args->stmt_res  =  stmt_res;
     row_count_args->count     =  0;
 
-    #ifdef GIL_RELEASE_VERSION
+    #ifdef UNICODE_SUPPORT_VERSION
       rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLRowCount_helper, row_count_args,
                      (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
     #else
@@ -7515,7 +7957,7 @@ static int _ruby_ibm_db_get_column_by_name(stmt_handle *stmt_res, VALUE column, 
   if ( stmt_res->column_info == NULL ) {
     if ( release_gil == 1 ) {
 
-      #ifdef GIL_RELEASE_VERSION
+      #ifdef UNICODE_SUPPORT_VERSION
         rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_get_result_set_info, stmt_res,
                       (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
       #else
@@ -7678,7 +8120,7 @@ VALUE ibm_db_field_display_size(int argc, VALUE *argv, VALUE self)
     colattr_args->col_num         =  col+1;
     colattr_args->FieldIdentifier =  SQL_DESC_DISPLAY_SIZE;
 
-    #ifdef GIL_RELEASE_VERSION
+    #ifdef UNICODE_SUPPORT_VERSION
       rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLColAttributes_helper, colattr_args,
                      (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
     #else
@@ -7998,7 +8440,7 @@ VALUE ibm_db_field_width(int argc, VALUE *argv, VALUE self)
     colattr_args->col_num          =  col+1;
     colattr_args->FieldIdentifier  =  SQL_DESC_LENGTH;
 
-    #ifdef GIL_RELEASE_VERSION
+    #ifdef UNICODE_SUPPORT_VERSION
       rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLColAttributes_helper, colattr_args,
                      (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
     #else
@@ -8104,7 +8546,7 @@ VALUE ibm_db_rollback(int argc, VALUE *argv, VALUE self)
     end_X_args->handleType      =  SQL_HANDLE_DBC;
     end_X_args->completionType  =  SQL_ROLLBACK;    /*Remeber you are Rollingback the transaction*/
 
-    #ifdef GIL_RELEASE_VERSION
+    #ifdef UNICODE_SUPPORT_VERSION
       rc = rb_thread_blocking_region( (void *)_ruby_ibm_db_SQLEndTran, end_X_args,
                      (void *)_ruby_ibm_db_Connection_level_UBF, NULL);
     #else
@@ -8685,7 +9127,7 @@ VALUE ibm_db_result(int argc, VALUE *argv, VALUE self)
   if ( !NIL_P( stmt ) ) {
     Data_Get_Struct(stmt, stmt_handle, result_args->stmt_res);
 
-    #ifdef GIL_RELEASE_VERSION
+    #ifdef UNICODE_SUPPORT_VERSION
       ret_val = rb_thread_blocking_region( (void *)_ruby_ibm_db_result_helper, result_args,
                           (void *)_ruby_ibm_db_Statement_level_UBF, result_args->stmt_res );
     #else
@@ -9488,7 +9930,7 @@ VALUE ibm_db_fetch_row(int argc, VALUE *argv, VALUE self)
   helper_args->arg_count   =  argc;
   helper_args->error       =  &error;
 
-  #ifdef GIL_RELEASE_VERSION
+  #ifdef UNICODE_SUPPORT_VERSION
     ret_val = rb_thread_blocking_region( (void *)_ruby_ibm_db_fetch_row_helper, helper_args,
                         (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
   #else
@@ -9561,7 +10003,7 @@ VALUE ibm_db_fetch_assoc(int argc, VALUE *argv, VALUE self) {
   helper_args->error      =  &error;
   helper_args->funcType   =  FETCH_ASSOC;
 
-  #ifdef GIL_RELEASE_VERSION
+  #ifdef UNICODE_SUPPORT_VERSION
     ret_val = rb_thread_blocking_region( (void *)_ruby_ibm_db_bind_fetch_helper, helper_args,
                         (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
   #else
@@ -9648,7 +10090,7 @@ VALUE ibm_db_fetch_object(int argc, VALUE *argv, VALUE self)
   helper_args->error      =  &error;
   helper_args->funcType   =  FETCH_ASSOC;
 
-  #ifdef GIL_RELEASE_VERSION
+  #ifdef UNICODE_SUPPORT_VERSION
     row_res->hash = rb_thread_blocking_region( (void *)_ruby_ibm_db_bind_fetch_helper, helper_args,
                               (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
   #else
@@ -9730,7 +10172,7 @@ VALUE ibm_db_fetch_array(int argc, VALUE *argv, VALUE self)
   helper_args->error       =  &error;
   helper_args->funcType    =  FETCH_INDEX;
 
-  #ifdef GIL_RELEASE_VERSION
+  #ifdef UNICODE_SUPPORT_VERSION
     ret_val = rb_thread_blocking_region( (void *)_ruby_ibm_db_bind_fetch_helper, helper_args,
                         (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
   #else
@@ -9806,7 +10248,7 @@ VALUE ibm_db_fetch_both(int argc, VALUE *argv, VALUE self)
   helper_args->error       =  &error;
   helper_args->funcType    =  FETCH_BOTH;
 
-  #ifdef GIL_RELEASE_VERSION
+  #ifdef UNICODE_SUPPORT_VERSION
     ret_val = rb_thread_blocking_region( (void *)_ruby_ibm_db_bind_fetch_helper, helper_args,
                         (void *)_ruby_ibm_db_Statement_level_UBF, stmt_res );
   #else
@@ -10557,7 +10999,7 @@ VALUE ibm_db_server_info(int argc, VALUE *argv, VALUE self)
     getInfo_args->infoValue    =  NULL;
     getInfo_args->buff_length  =  0;
 
-    #ifdef GIL_RELEASE_VERSION
+    #ifdef UNICODE_SUPPORT_VERSION
       return_value  =  rb_thread_blocking_region( (void *)ibm_db_server_info_helper, getInfo_args,
                                  (void *)_ruby_ibm_db_Connection_level_UBF, NULL);
     #else
@@ -10844,7 +11286,7 @@ VALUE ibm_db_client_info(int argc, VALUE *argv, VALUE self)
     getInfo_args->infoValue    =  NULL;
     getInfo_args->buff_length  =  0;
 
-    #ifdef GIL_RELEASE_VERSION
+    #ifdef UNICODE_SUPPORT_VERSION
       return_value = rb_thread_blocking_region( (void *)ibm_db_client_info_helper, getInfo_args,
                                (void *)_ruby_ibm_db_Connection_level_UBF, NULL);
     #else

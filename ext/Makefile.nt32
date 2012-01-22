@@ -4,12 +4,12 @@ SHELL = /bin/sh
 #### Start of system configuration section. ####
 
 srcdir = .
-topdir =$(TOP)/opendbad/win/ruby_1.8.6/lib/ruby/1.8/i386-mswin32
+topdir =$(TOP)/opendbad/win/ruby_win_exes/ruby_1.8.6/lib/ruby/1.8/i386-mswin32
 hdrdir = $(topdir)
 VPATH = $(srcdir);$(topdir);$(hdrdir)
 
 
-DESTDIR = $(TOP)/opendbad/win
+DESTDIR = $(TOP)/opendbad/win/ruby_win_exes
 prefix = $(DESTDIR)/ruby_1.8.6
 exec_prefix = $(DESTDIR)/ruby_1.8.6
 sitedir = $(prefix)/lib/ruby/site_ruby
@@ -51,7 +51,7 @@ RUBY_SO_NAME = msvcrt-ruby18
 arch = i386-mswin32
 sitearch = i386-msvcrt
 ruby_version = 1.8
-ruby = $(TOP)/opendbad/win/ruby_1.8.6/bin/ruby.exe
+ruby = $(TOP)/opendbad/win/ruby_win_exes/ruby_1.8.6/bin/ruby.exe
 RUBY = $(ruby:/=\)
 RM = $(RUBY) -run -e rm -- -f
 MAKEDIRS = @$(RUBY) -run -e mkdir -- -p

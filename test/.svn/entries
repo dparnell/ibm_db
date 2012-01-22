@@ -1,80 +1,0 @@
-10
-
-dir
-42
-http://rubyibm.rubyforge.org/svn/trunk/IBM_DB_Adapter/ibm_db/test
-http://rubyibm.rubyforge.org/svn
-
-
-
-2011-02-10T08:26:10.423426Z
-42
-praveend
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-82de42ae-a01f-0410-b202-92c0e6e14792
-
-associations
-dir
-
-schema
-dir
-
-connections
-dir
-
-models
-dir
-
-fixtures
-dir
-
-ibm_db_test.rb
-file
-
-
-
-
-2012-01-20T06:30:55.000000Z
-531978abbae293db355fa544d9dd4c3f
-2007-03-21T21:02:55.401337Z
-7
-alexp
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-632
-
-cases
-dir
-

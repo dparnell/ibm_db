@@ -1,5 +1,15 @@
 Change Log
 ==============
+2012/01/03 (IBM_DB adapter 2.5.9, driver 2.5.9) :
+  - Support for Create and Drop database on DB2 LUW with DB2 client version V97fp4 and above
+  - Fixed bug #29482 - Fixed bigint being returned as string in the adapter
+  
+2011/09/18 (IBM_DB adapter 2.5.7, driver 2.5.7) :
+  - Support for Rails-3.1.0
+  - Fixed bug #29052 -> prepare results in empty error message
+  - Support for continuation of method IBM_DB.conn_error and IBM_DB.conn_errormsg - #29324
+  - Test suite update as for Rails-3.1.0
+
 2011/02/07 (IBM_DB adapter 2.5.6, driver 2.5.6) :
   - Fixed Bug #28622, #28881
   - Decimal datatypes will now be returned as BigDecimal type from the driver

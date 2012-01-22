@@ -1,3 +1,4 @@
+=begin
 print "Using native IBM_DB\n"
 require_dependency 'models/course'
 require 'logger'
@@ -40,3 +41,4 @@ ActiveRecord::Base.configurations = {
 
 ActiveRecord::Base.establish_connection 'arunit'
 Course.establish_connection 'arunit2'
+=end

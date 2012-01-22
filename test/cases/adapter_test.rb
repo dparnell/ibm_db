@@ -18,28 +18,28 @@ class AdapterTest < ActiveRecord::TestCase
       else
         warn "#{@connection.class} does not support client connection attribute schema_name"
       end
-  
+
       if @connection.respond_to?(:app_user)
         ActiveRecord::Base.connection.app_user = 'new_user'
         assert_equal 'new_user', ActiveRecord::Base.connection.app_user
       else
         warn "#{@connection.class} does not support client connection attribute SQL_ATTR_INFO_USER"
       end
-  
+
       if @connection.respond_to?(:account)
         ActiveRecord::Base.connection.account = 'new_acct'
         assert_equal 'new_acct', ActiveRecord::Base.connection.account
       else
         warn "#{@connection.class} does not support client connection attribute SQL_ATTR_INFO_ACCTSTR"
       end
-  
+
       if @connection.respond_to?(:application)
         ActiveRecord::Base.connection.application = 'new_app'
         assert_equal 'new_app', ActiveRecord::Base.connection.application
       else
         warn "#{@connection.class} does not support client connection attribute SQL_ATTR_INFO_APPLNAME"
       end
-  
+
       if @connection.respond_to?(:workstation)
         ActiveRecord::Base.connection.workstation = 'new_wrkst'
         assert_equal 'new_wrkst', ActiveRecord::Base.connection.workstation
@@ -48,7 +48,7 @@ class AdapterTest < ActiveRecord::TestCase
       end
     end
   end
-  
+
   def test_tables
     tables = @connection.tables
     assert tables.include?("accounts")
@@ -87,7 +87,7 @@ class AdapterTest < ActiveRecord::TestCase
 
   def test_current_database
     if @connection.respond_to?(:current_database)
-      assert_equal ENV['ARUNIT_DB_NAME'] || "activerecord_unittest", @connection.current_database
+      assert_equal ARTest.connection_config['arunit']['database'], @connection.current_database
     end
   end
 
@@ -112,7 +112,12 @@ class AdapterTest < ActiveRecord::TestCase
       begin
         assert_nothing_raised do
           ActiveRecord::Base.establish_connection(ActiveRecord::Base.configurations['arunit'].except(:database))
-          ActiveRecord::Base.connection.execute "SELECT activerecord_unittest.pirates.*, activerecord_unittest2.courses.* FROM activerecord_unittest.pirates, activerecord_unittest2.courses"
+
+          config = ARTest.connection_config
+          ActiveRecord::Base.connection.execute(
+            "SELECT #{config['arunit']['database']}.pirates.*, #{config['arunit2']['database']}.courses.* " \
+            "FROM #{config['arunit']['database']}.pirates, #{config['arunit2']['database']}.courses"
+          )
         end
       ensure
         ActiveRecord::Base.establish_connection 'arunit'
@@ -166,14 +171,16 @@ class AdapterTest < ActiveRecord::TestCase
   end
 
   def test_uniqueness_violations_are_translated_to_specific_exception
-    @connection.execute "INSERT INTO subscribers(nick) VALUES('me')"
-    assert_raises(ActiveRecord::RecordNotUnique) do
+    unless @connection.adapter_name == 'IBM_DB'
       @connection.execute "INSERT INTO subscribers(nick) VALUES('me')"
+      assert_raises(ActiveRecord::RecordNotUnique) do
+        @connection.execute "INSERT INTO subscribers(nick) VALUES('me')"
+      end
     end
   end
 
   def test_foreign_key_violations_are_translated_to_specific_exception
-    unless @connection.adapter_name == 'SQLite'
+    unless @connection.adapter_name == 'SQLite' || @connection.adapter_name == 'IBM_DB'
       assert_raises(ActiveRecord::InvalidForeignKey) do
         # Oracle adapter uses prefetched primary key values from sequence and passes them to connection adapter insert method
         if @connection.prefetch_primary_key?
@@ -186,17 +193,13 @@ class AdapterTest < ActiveRecord::TestCase
     end
   end
 
-  unless current_adapter?(:IBM_DBAdapter)
-    def test_add_limit_offset_should_sanitize_sql_injection_for_limit_without_comas
-      sql_inject = "1 select * from schema"
-      assert_no_match(/schema/, @connection.add_limit_offset!("", :limit=>sql_inject))
-      assert_no_match(/schema/, @connection.add_limit_offset!("", :limit=>sql_inject, :offset=>7))
-    end
-
-    def test_add_limit_offset_should_sanitize_sql_injection_for_limit_with_comas
-      sql_inject = "1, 7 procedure help()"
-      assert_no_match(/procedure/, @connection.add_limit_offset!("", :limit=>sql_inject))
-      assert_no_match(/procedure/, @connection.add_limit_offset!("", :limit=>sql_inject, :offset=>7))
-    end
+  def test_deprecated_visitor_for
+    visitor_klass = Class.new(Arel::Visitors::ToSql)
+    Arel::Visitors::VISITORS['fuuu'] = visitor_klass
+    pool = stub(:spec => stub(:config => { :adapter => 'fuuu' }))
+    visitor = assert_deprecated {
+      ActiveRecord::ConnectionAdapters::AbstractAdapter.visitor_for(pool)
+    }
+    assert visitor.is_a?(visitor_klass)
   end
 end

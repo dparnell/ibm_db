@@ -2,7 +2,7 @@
   +----------------------------------------------------------------------+
   |  Licensed Materials - Property of IBM                                |
   |                                                                      |
-  | (C) Copyright IBM Corporation 2009, 2010                             |
+  | (C) Copyright IBM Corporation 2009, 2010, 2012                       |
   +----------------------------------------------------------------------+
   | Authors: Praveen Devarao                                             |
   +----------------------------------------------------------------------+
@@ -10,6 +10,35 @@
 
 #ifndef RUBY_IBM_DB_CLI_H
 #define RUBY_IBM_DB_CLI_H
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+
+#ifdef _WIN32
+#define DLOPEN LoadLibrary
+#define DLSYM GetProcAddress
+#define DLCLOSE FreeLibrary
+#define LIBDB2 "db2cli.dll"
+#elif _AIX
+#define DLOPEN dlopen
+#define DLSYM dlsym
+#define DLCLOSE dlclose
+#ifdef __64BIT__
+/*64-bit library in the archive libdb2.a*/
+#define LIBDB2 "libdb2.a(shr_64.o)"
+#else
+/*32-bit library in the archive libdb2.a*/
+#define LIBDB2 "libdb2.a(shr.o)"
+#endif
+#else
+#define DLOPEN dlopen
+#define DLSYM dlsym
+#define DLCLOSE dlclose
+#define LIBDB2 "libdb2.so.1"
+#endif
 
 #include <ruby.h>
 #include <stdio.h>
@@ -53,6 +82,8 @@ typedef struct _conn_handle_struct {
   SQLPOINTER   ruby_error_msg;
   SQLPOINTER   ruby_error_state;
   SQLSMALLINT  ruby_error_msg_len;
+
+  SQLINTEGER   sqlcode;
 
 } conn_handle;
 
@@ -114,6 +145,7 @@ typedef struct _stmt_handle_struct {
   SQLPOINTER   ruby_stmt_err_msg;
   SQLPOINTER   ruby_stmt_err_state;
   SQLSMALLINT  ruby_stmt_err_msg_len;
+  SQLINTEGER   sqlcode;
 } stmt_handle;
 
 /* 
@@ -210,6 +242,25 @@ typedef struct _ibm_db_exec_direct_args_struct {
 #endif
   long          stmt_string_len;
 } exec_cum_prepare_args;
+
+/* 
+    Structure holding the necessary info to be passed to SQLCreateDB and SQLDropDB CLI call
+*/
+typedef struct _ibm_db_create_drop_db_args_struct {
+  conn_handle   *conn_res;
+#ifdef UNICODE_SUPPORT_VERSION
+  SQLWCHAR      *dbName;
+  SQLWCHAR      *codeSet;
+  SQLWCHAR      *mode;
+#else
+  SQLCHAR       *dbName;
+  SQLCHAR       *codeSet;
+  SQLCHAR       *mode;
+#endif
+  long          dbName_string_len;
+  long          codeSet_string_len;
+  long          mode_string_len;
+} create_drop_db_args;
 
 /* 
     Structure holding the necessary info to be passed to SQLParamData and SQLPutData CLI call
@@ -427,5 +478,7 @@ int _ruby_ibm_db_SQLGetConnectAttr_helper(get_handle_attr_args *data);
 int _ruby_ibm_db_SQLBindFileToParam_helper(stmt_handle *stmt_res, param_node *curr);
 int _ruby_ibm_db_SQLBindParameter_helper(bind_parameter_args *data);
 void _ruby_ibm_db_Statement_level_UBF(stmt_handle *stmt_res);
+int _ruby_ibm_db_SQLCreateDB_helper(create_drop_db_args *data);
+int _ruby_ibm_db_SQLDropDB_helper(create_drop_db_args *data);
 
 #endif  /* RUBY_IBM_DB_CLI_H */

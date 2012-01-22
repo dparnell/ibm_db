@@ -10,7 +10,7 @@ require 'pathname'
 SPEC = Gem::Specification.new do |spec|
   # Required spec
   spec.name     = 'ibm_db'
-  spec.version  = '2.5.6'
+  spec.version  = '2.5.9'
   spec.summary  = 'Rails Driver and Adapter for IBM Data Servers: {DB2 on Linux/Unix/Windows, DB2 on zOS, DB2 on i5/OS, Informix (IDS)}'
 
   # Optional spec
@@ -43,7 +43,7 @@ SPEC = Gem::Specification.new do |spec|
     drv_path = Pathname.new(File.dirname(__FILE__)) + 'lib'
     puts ".. Locate ibm_db driver path: #{drv_path.realpath}"
     drv_lib = drv_path + 'ibm_db.so'
-    if drv_lib.file? && (require "#{drv_lib.to_s}")
+    if drv_lib.file? #&& (require "#{drv_lib.to_s}") #Commenting condition check as Ruby-1.9 does not recognize files from local directory
       puts ".. ibm_db driver was found:   #{drv_lib.realpath}"
     else
       puts ".. ibm_db driver binary was not found. The driver native extension to be built during install."

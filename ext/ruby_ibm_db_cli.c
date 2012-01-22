@@ -2,7 +2,7 @@
   +----------------------------------------------------------------------+
   |  Licensed Materials - Property of IBM                                |
   |                                                                      |
-  | (C) Copyright IBM Corporation 2009, 2010                             |
+  | (C) Copyright IBM Corporation 2009, 2010, 2012                       |
   +----------------------------------------------------------------------+
   | Authors: Praveen Devarao                                             |
   +----------------------------------------------------------------------+
@@ -369,6 +369,113 @@ int _ruby_ibm_db_SQLExecDirect_helper(exec_cum_prepare_args *data) {
 
   data->stmt_res->is_executing = 0;
 
+  return rc;
+}
+
+/*
+   This function calls SQLCreateDb cli call
+*/
+int _ruby_ibm_db_SQLCreateDB_helper(create_drop_db_args *data) {
+  int rc = 0;
+#ifndef UNICODE_SUPPORT_VERSION
+  #ifdef _WIN32
+    HINSTANCE cliLib = NULL;
+    FARPROC sqlcreatedb;
+    cliLib = DLOPEN( LIBDB2 );
+    sqlcreatedb =  DLSYM( cliLib, "SQLCreateDb" );
+  #elif _AIX
+    void *cliLib = NULL;
+    typedef int (*sqlcreatedbType)( SQLHDBC, SQLCHAR *, SQLINTEGER, SQLCHAR *, SQLINTEGER, SQLCHAR *, SQLINTEGER );
+    sqlcreatedbType sqlcreatedb;
+  /* On AIX CLI library is in archive. Hence we will need to specify flags in DLOPEN to load a member of the archive*/
+    cliLib = DLOPEN( LIBDB2, RTLD_MEMBER | RTLD_LAZY );
+    sqlcreatedb = (sqlcreatedbType) DLSYM( cliLib, "SQLCreateDb" );
+  #else
+    void *cliLib = NULL;
+    typedef int (*sqlcreatedbType)( SQLHDBC, SQLCHAR *, SQLINTEGER, SQLCHAR *, SQLINTEGER, SQLCHAR *, SQLINTEGER );
+    sqlcreatedbType sqlcreatedb;
+    cliLib = DLOPEN( LIBDB2, RTLD_LAZY );
+    sqlcreatedb = (sqlcreatedbType) DLSYM( cliLib, "SQLCreateDb" );
+  #endif
+#else
+  #ifdef _WIN32
+    HINSTANCE cliLib = NULL;
+    FARPROC sqlcreatedb;
+    cliLib = DLOPEN( LIBDB2 );
+    sqlcreatedb =  DLSYM( cliLib, "SQLCreateDbW" );
+  #elif _AIX
+    void *cliLib = NULL;
+    typedef int (*sqlcreatedbType)( SQLHDBC, SQLWCHAR *, SQLINTEGER, SQLWCHAR *, SQLINTEGER, SQLWCHAR *, SQLINTEGER );
+    sqlcreatedbType sqlcreatedb;
+  /* On AIX CLI library is in archive. Hence we will need to specify flags in DLOPEN to load a member of the archive*/
+    cliLib = DLOPEN( LIBDB2, RTLD_MEMBER | RTLD_LAZY );
+    sqlcreatedb = (sqlcreatedbType) DLSYM( cliLib, "SQLCreateDbW" );
+  #else
+    void *cliLib = NULL;
+    typedef int (*sqlcreatedbType)( SQLHDBC, SQLWCHAR *, SQLINTEGER, SQLWCHAR *, SQLINTEGER, SQLWCHAR *, SQLINTEGER );
+    sqlcreatedbType sqlcreatedb;
+    cliLib = DLOPEN( LIBDB2, RTLD_LAZY );
+    sqlcreatedb = (sqlcreatedbType) DLSYM( cliLib, "SQLCreateDbW" );
+  #endif
+#endif
+
+  rc = (*sqlcreatedb)( (SQLHSTMT) data->conn_res->hdbc, data->dbName, (SQLINTEGER)data->dbName_string_len, 
+                            data->codeSet, (SQLINTEGER)data->codeSet_string_len,
+							data->mode, (SQLINTEGER)data->mode_string_len );
+  DLCLOSE( cliLib );
+  return rc;
+}
+
+/*
+   This function calls SQLDropDb cli call
+*/
+int _ruby_ibm_db_SQLDropDB_helper(create_drop_db_args *data) {
+  int rc = 0;
+#ifndef UNICODE_SUPPORT_VERSION
+  #ifdef _WIN32
+    HINSTANCE cliLib = NULL;
+    FARPROC sqldropdb;
+    cliLib = DLOPEN( LIBDB2 );
+    sqldropdb =  DLSYM( cliLib, "SQLDropDb" );
+  #elif _AIX
+    void *cliLib = NULL;
+    typedef int (*sqldropdbType)( SQLHDBC, SQLCHAR *, SQLINTEGER);
+    sqldropdbType sqldropdb;
+  /* On AIX CLI library is in archive. Hence we will need to specify flags in DLOPEN to load a member of the archive*/
+    cliLib = DLOPEN( LIBDB2, RTLD_MEMBER | RTLD_LAZY );
+    sqldropdb = (sqldropdbType) DLSYM( cliLib, "SQLDropDb" );
+  #else
+    void *cliLib = NULL;
+    typedef int (*sqldropdbType)( SQLHDBC, SQLCHAR *, SQLINTEGER);
+    sqldropdbType sqldropdb;
+    cliLib = DLOPEN( LIBDB2, RTLD_LAZY );
+    sqldropdb = (sqldropdbType) DLSYM( cliLib, "SQLDropDb" );
+  #endif
+#else
+  #ifdef _WIN32
+    HINSTANCE cliLib = NULL;
+    FARPROC sqldropdb;
+    cliLib = DLOPEN( LIBDB2 );
+    sqldropdb =  DLSYM( cliLib, "SQLDropDbW" );
+  #elif _AIX
+    void *cliLib = NULL;
+    typedef int (*sqldropdbType)( SQLHDBC, SQLWCHAR *, SQLINTEGER);
+    sqldropdbType sqldropdb;
+  /* On AIX CLI library is in archive. Hence we will need to specify flags in DLOPEN to load a member of the archive*/
+    cliLib = DLOPEN( LIBDB2, RTLD_MEMBER | RTLD_LAZY );
+    sqldropdb = (sqldropdbType) DLSYM( cliLib, "SQLDropDbW" );
+  #else
+    void *cliLib = NULL;
+    typedef int (*sqldropdbType)( SQLHDBC, SQLWCHAR *, SQLINTEGER);
+    sqldropdbType sqldropdb;
+    cliLib = DLOPEN( LIBDB2, RTLD_LAZY );
+    sqldropdb = (sqldropdbType) DLSYM( cliLib, "SQLDropDbW" );
+  #endif
+#endif
+
+  rc = (*sqldropdb)( (SQLHSTMT) data->conn_res->hdbc, data->dbName, (SQLINTEGER)data->dbName_string_len );
+
+  DLCLOSE( cliLib );
   return rc;
 }
 

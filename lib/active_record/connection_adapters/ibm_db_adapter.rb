@@ -117,6 +117,22 @@ module ActiveRecord
       # Flag to decide if quoted literal replcement should take place. By default it is ON. Set it to OFF if using Pstmt
       set_quoted_literal_replacement = IBM_DB::QUOTED_LITERAL_REPLACEMENT_ON
 
+      # Retrieves database user credentials from the +config+ hash
+      # or raises ArgumentError in case of failure.
+      if !config.has_key?(:username) || !config.has_key?(:password)
+        raise ArgumentError, "Missing argument(s): Username/Password for #{config[:database]} is not specified"
+      else
+        if(config[:username].to_s.nil? || config[:password].to_s.nil?)
+          raise ArgumentError, "Username/Password cannot be nil"
+        end
+        username = config[:username].to_s
+        password = config[:password].to_s
+      end
+
+      if(config.has_key?(:dbops) && config[:dbops] == true)
+        return ConnectionAdapters::IBM_DBAdapter.new(nil, logger, config, {})
+      end
+
       # Retrieves the database alias (local catalog name) or remote name
       # (for remote TCP/IP connections) from the +config+ hash
       # or raises ArgumentError in case of failure.
@@ -124,15 +140,6 @@ module ActiveRecord
         database = config[:database].to_s
       else
         raise ArgumentError, "Missing argument: a database name needs to be specified."
-      end
-
-      # Retrieves database user credentials from the +config+ hash
-      # or raises ArgumentError in case of failure.
-      if !config.has_key?(:username) || !config.has_key?(:password)
-        raise ArgumentError, "Missing argument(s): Username/Password for #{config[:database]} is not specified"
-      else
-        username = config[:username].to_s
-        password = config[:password].to_s
       end
 
       # Providing default schema (username) when not specified
@@ -232,8 +239,6 @@ module ActiveRecord
             :binary
           when /smallint/i
             :boolean
-          when /bigint/i
-            :bigint
           when /int|serial/i
             :integer
           when /decimal|numeric|decfloat/i
@@ -521,7 +526,7 @@ module ActiveRecord
                 end
               when /DB2/i               # DB2 for zOS
                 case server_info.DBMS_VER
-                  when /09/             # DB2 for zOS version 9
+                  when /09/ || /10/             # DB2 for zOS version 9 and version 10
                     @servertype = IBM_DB2_ZOS.new(self)
                   when /08/             # DB2 for zOS version 8
                     @servertype = IBM_DB2_ZOS_8.new(self)
@@ -603,6 +608,19 @@ module ActiveRecord
         end
       end
 
+      def self.visitor_for(pool)
+        Arel::Visitors::IBM_DB.new(pool)
+      end
+      
+      def to_sql(arel)
+        if arel.respond_to?(:ast)
+          visitor.accept(arel.ast)
+        else
+          arel
+        end
+
+      end
+
       # This adapter supports migrations.
       # Current limitations:
       # +rename_column+ is not currently supported by the IBM data servers
@@ -639,6 +657,10 @@ module ActiveRecord
       # It connects to the database with the initially provided credentials
       def connect
         # If the type of connection is net based
+        if(@username.nil? || @password.nil?)
+          raise ArgumentError, "Username/Password cannot be nil"
+        end
+
         begin
           if @host
             @conn_string = "DRIVER={IBM DB2 ODBC DRIVER};\
@@ -681,6 +703,7 @@ module ActiveRecord
         # * true if succesfull
         # * false if the connection is already closed
         # * nil if an error is raised
+        return nil if @connection.nil? || @connection == false
         IBM_DB.close(@connection) rescue nil
       end
 
@@ -719,7 +742,7 @@ module ActiveRecord
         pstmt = prepare(sql_param_hash["sqlSegment"], name)
         if(execute_prepared_stmt(pstmt, sql_param_hash["paramArray"]))
           begin
-            @servertype.select(sql_param_hash["sqlSegment"], name, pstmt, results)
+            results = @servertype.select(pstmt)
           rescue StandardError => fetch_error # Handle driver fetch errors
             error_msg = IBM_DB.getErrormsg(pstmt, IBM_DB::DB_STMT )
             if error_msg && !error_msg.empty?
@@ -743,14 +766,13 @@ module ActiveRecord
       # and +name+ is an optional description for logging
       def prepared_select_values(sql_param_hash, name = nil)
         # Replaces {"= NULL" with " IS NULL"} OR {"IN (NULL)" with " IS NULL"}
-
         results = []
         # Invokes the method +prepare+ in order prepare the SQL
         # IBM_DB.Statement is returned from which the statement is executed and results fetched
         pstmt = prepare(sql_param_hash["sqlSegment"], name)
         if(execute_prepared_stmt(pstmt, sql_param_hash["paramArray"]))
           begin
-            @servertype.select_rows(sql_param_hash["sqlSegment"], name, pstmt, results)
+            results = @servertype.select_rows(sql_param_hash["sqlSegment"], name, pstmt, results)
             if results
               return results.map { |v| v[0] }
             else
@@ -774,6 +796,27 @@ module ActiveRecord
         results
       end
 
+      #Calls the servertype select method to fetch the data
+      def fetch_data(stmt)
+        if(stmt)
+          begin
+            return @servertype.select(stmt)
+          rescue StandardError => fetch_error # Handle driver fetch errors
+            error_msg = IBM_DB.getErrormsg(stmt, IBM_DB::DB_STMT )
+            if error_msg && !error_msg.empty?
+              raise StatementInvalid,"Failed to retrieve data: #{error_msg}"
+            else
+              error_msg = "An unexpected error occurred during data retrieval"
+              error_msg = error_msg + ": #{fetch_error.message}" if !fetch_error.message.empty?
+              raise error_msg
+            end
+          ensure
+          # Ensures to free the resources associated with the statement
+            IBM_DB.free_stmt(stmt) if stmt
+          end
+        end
+      end
+=begin
       # Returns an array of hashes with the column names as keys and
       # column values as values. +sql+ is the select query, 
       # and +name+ is an optional description for logging
@@ -785,25 +828,29 @@ module ActiveRecord
         # Invokes the method +execute+ in order to log and execute the SQL
         # IBM_DB.Statement is returned from which results can be fetched
         stmt = execute(sql, name)
-        if(stmt)
-          begin
-            @servertype.select(sql, name, stmt, results)
-          rescue StandardError => fetch_error # Handle driver fetch errors
-            error_msg = IBM_DB.getErrormsg(stmt, IBM_DB::DB_STMT )
-            if error_msg && !error_msg.empty?
-              raise StatementInvalid,"Failed to retrieve data: #{error_msg}"
-            else
-              error_msg = "An unexpected error occurred during data retrieval"
-              error_msg = error_msg + ": #{fetch_error.message}" if !fetch_error.message.empty?
-              raise error_msg
-            end
-          ensure
-            # Ensures to free the resources associated with the statement
-            IBM_DB.free_stmt(stmt) if stmt
-          end
-        end
+
+        results = fetch_data(stmt)
         # The array of record hashes is returned
         results
+      end
+=end
+      def select(sql, name = nil, binds = [])
+        # Replaces {"= NULL" with " IS NULL"} OR {"IN (NULL)" with " IS NULL"}
+        sql.gsub!( /(=\s*NULL|IN\s*\(NULL\))/i, " IS NULL" )
+
+        results = []
+
+        if(binds.nil? || binds.empty?)
+          stmt = execute(sql, name)
+        else
+          stmt = exec_query(sql, name, binds)
+        end
+
+        if( stmt ) 
+          results = fetch_data(stmt)
+        end
+
+        return results
       end
 
       #Returns an array of arrays containing the field values.
@@ -819,7 +866,7 @@ module ActiveRecord
         stmt = execute(sql, name)
         if(stmt)
           begin
-            @servertype.select_rows(sql, name, stmt, results)
+            results = @servertype.select_rows(sql, name, stmt, results)
           rescue StandardError => fetch_error  # Handle driver fetch errors
             error_msg = IBM_DB.getErrormsg(stmt, IBM_DB::DB_STMT )
             if error_msg && !error_msg.empty?
@@ -850,7 +897,12 @@ module ActiveRecord
       #overridden to handle LOB's fixture insertion, as, in normal inserts callbacks are triggered but during fixture insertion callbacks are not triggered
       #hence only markers like @@@IBMBINARY@@@ will be inserted and are not updated to actual data
       def insert_fixture(fixture, table_name)
-        insert_query = "INSERT INTO #{quote_table_name(table_name)} ( #{fixture.key_list})"
+        if(fixture.respond_to?(:keys))
+          insert_query = "INSERT INTO #{quote_table_name(table_name)} ( #{fixture.keys.join(', ')})"
+        else
+          insert_query = "INSERT INTO #{quote_table_name(table_name)} ( #{fixture.key_list})"
+        end
+
         insert_values = []
         params = []
         if @servertype.instance_of? IBM_IDS
@@ -910,7 +962,7 @@ module ActiveRecord
       # Perform an insert and returns the last ID generated.
       # This can be the ID passed to the method or the one auto-generated by the database,
       # and retrieved by the +last_generated_id+ method.
-      def insert(sql, name = nil, pk = nil, id_value = nil, sequence_name = nil)
+      def insert_direct(sql, name = nil, pk = nil, id_value = nil, sequence_name = nil)
         if @handle_lobs_triggered  #Ensure the array of sql is cleared if they have been handled in the callback
           @sql = []
           @handle_lobs_triggered = false
@@ -929,11 +981,30 @@ module ActiveRecord
         end
       end
 
+      def insert(arel, name = nil, pk = nil, id_value = nil, sequence_name = nil, binds = [] )
+        sql, binds = [to_sql(arel),binds]
+
+        #unless IBM_DBAdapter.respond_to?(:exec_insert)
+        if binds.nil? || binds.empty?
+          return insert_direct(sql, name, pk, id_value, sequence_name)
+        end
+
+        clear_query_cache if defined? clear_query_cache
+        if stmt = exec_insert(sql, name, binds)
+          begin
+            @sql << sql
+            return id_value || @servertype.last_generated_id(stmt)
+          ensure
+            IBM_DB.free_stmt(stmt) if stmt
+          end
+        end
+      end
+
       # Praveen
       # Performs an insert using the prepared statement and returns the last ID generated.
       # This can be the ID passed to the method or the one auto-generated by the database,
       # and retrieved by the +last_generated_id+ method.
-      def prepared_insert(pstmt, param_array = nil)
+      def prepared_insert(pstmt, param_array = nil, id_value = nil)
         if @handle_lobs_triggered  #Ensure the array of sql is cleared if they have been handled in the callback
           @sql                   = []
           @sql_parameter_values  = []
@@ -946,7 +1017,7 @@ module ActiveRecord
           if execute_prepared_stmt(pstmt, param_array)
             @sql << @prepared_sql
             @sql_parameter_values << param_array
-            return @servertype.last_generated_id(pstmt)
+            return id_value || @servertype.last_generated_id(pstmt)
           end
         rescue StandardError => insert_err
           raise insert_err
@@ -988,6 +1059,29 @@ module ActiveRecord
         end
       end
 
+      # Executes +sql+ statement in the context of this connection using
+      # +binds+ as the bind substitutes.  +name+ is logged along with
+      # the executed +sql+ statement.
+      def exec_query(sql, name = 'SQL', binds = [])
+        begin
+          param_array = binds.map do |column,value|
+            quote_value_for_pstmt(value, column)
+          end
+
+          stmt = prepare(sql, name)
+
+           if( stmt )
+             if(execute_prepared_stmt(stmt, param_array))
+               return stmt
+             end
+           else
+             return false
+           end
+        ensure
+          @offset = @limit = nil
+        end
+      end
+
       # Executes and logs +sql+ commands and
       # returns a +IBM_DB.Statement+ object.
       def execute(sql, name = nil)
@@ -999,27 +1093,10 @@ module ActiveRecord
       end
 
       # Executes an "UPDATE" SQL statement
-      def update(sql, name = nil)
+      def update_direct(sql, name = nil)
         if @handle_lobs_triggered  #Ensure the array of sql is cleared if they have been handled in the callback
           @sql = []
           @handle_lobs_triggered = false
-        end
-
-        clear_query_cache if defined? clear_query_cache
-        
-        # Make sure the WHERE clause handles NULL's correctly
-        sqlarray = sql.split(/\s*WHERE\s*/)
-        size = sqlarray.size
-        if size > 1
-          sql = sqlarray[0] + " WHERE "
-          if size > 2
-            1.upto size-2 do |index|
-              sqlarray[index].gsub!( /(=\s*NULL|IN\s*\(NULL\))/i, " IS NULL" ) unless sqlarray[index].nil?
-              sql = sql + sqlarray[index] + " WHERE "
-            end
-          end
-          sqlarray[size-1].gsub!( /(=\s*NULL|IN\s*\(NULL\))/i, " IS NULL" ) unless sqlarray[size-1].nil?
-          sql = sql + sqlarray[size-1]
         end
 
         # Logs and execute the given sql query.
@@ -1062,8 +1139,38 @@ module ActiveRecord
       # The delete method executes the delete
       # statement and returns the number of affected rows.
       # The method is an alias for +update+
-      alias_method :delete, :update
       alias_method :prepared_delete, :prepared_update
+
+      def update(arel, name = nil, binds = [])
+        sql = to_sql(arel)
+
+        # Make sure the WHERE clause handles NULL's correctly
+        sqlarray = sql.split(/\s*WHERE\s*/)
+        size = sqlarray.size
+        if size > 1
+          sql = sqlarray[0] + " WHERE "
+          if size > 2
+            1.upto size-2 do |index|
+              sqlarray[index].gsub!( /(=\s*NULL|IN\s*\(NULL\))/i, " IS NULL" ) unless sqlarray[index].nil?
+              sql = sql + sqlarray[index] + " WHERE "
+            end
+          end
+          sqlarray[size-1].gsub!( /(=\s*NULL|IN\s*\(NULL\))/i, " IS NULL" ) unless sqlarray[size-1].nil?
+          sql = sql + sqlarray[size-1]
+        end
+
+        clear_query_cache if defined? clear_query_cache
+
+        if binds.nil? || binds.empty?
+          update_direct(sql, name)
+        else
+          if stmt = exec_query(sql,name,binds)
+            IBM_DB.num_rows(stmt)
+          end
+        end
+      end
+
+      alias_method :delete, :update
 
       # Begins the transaction (and turns off auto-committing)
       def begin_db_transaction
@@ -1105,27 +1212,26 @@ module ActiveRecord
       # generates "SELECT O.* FROM (SELECT I.*, ROW_NUMBER() OVER () sys_rownum
       # FROM (SELECT * FROM staff) AS I) AS O WHERE sys_row_num BETWEEN 31 AND 40"
       def add_limit_offset!(sql, options)
-        # If there is a limit
-        if limit = options[:limit]
-          # if the limit is zero
-          if limit == 0
-            # Returns a query that will always generate zero records
-            # (e.g. WHERE sys_row_num BETWEEN 1 and 0)
-            if( @pstmt_support_on )
-              sql = @servertype.query_offset_limit!(sql, 0, limit, options)
-            else
-              sql = @servertype.query_offset_limit(sql, 0, limit)
-            end
-          # If there is a non-zero limit
+        limit = options[:limit]
+        offset = options[:offset]
+
+        # if the limit is zero
+        if limit && limit == 0
+          # Returns a query that will always generate zero records
+          # (e.g. WHERE sys_row_num BETWEEN 1 and 0)
+          if( @pstmt_support_on )
+            sql = @servertype.query_offset_limit!(sql, 0, limit, options)
           else
-            offset = options[:offset]
-            # If an offset is specified builds the query with offset and limit,
-            # otherwise retrieves only the first +limit+ rows
-            if( @pstmt_support_on )
-              sql = @servertype.query_offset_limit!(sql, offset, limit, options)
-            else
-              sql = @servertype.query_offset_limit(sql, offset, limit)
-            end
+            sql = @servertype.query_offset_limit(sql, 0, limit)
+          end
+        # If there is a non-zero limit
+        else
+          # If an offset is specified builds the query with offset and limit,
+          # otherwise retrieves only the first +limit+ rows
+          if( @pstmt_support_on )
+            sql = @servertype.query_offset_limit!(sql, offset, limit, options)
+          else
+            sql = @servertype.query_offset_limit(sql, offset, limit)
           end
         end
         # Returns the sql query in any case
@@ -1161,6 +1267,7 @@ module ActiveRecord
           when Float, Fixnum, Bignum    then value
           # BigDecimals need to be output in a non-normalized form and quoted.
           when BigDecimal               then value.to_s('F')
+          when Numeric, Symbol          then value.to_s
           else
             if value.acts_like?(:date) || value.acts_like?(:time)
               quoted_date(value)
@@ -1173,6 +1280,8 @@ module ActiveRecord
       # Properly quotes the various data types.
       # +value+ contains the data, +column+ is optional and contains info on the field
       def quote(value, column = nil)
+        return value.quoted_id if value.respond_to?(:quoted_id)
+
         case value
           # If it's a numeric value and the column type is not a string, it shouldn't be quoted
           # (IBM_DB doesn't accept quotes on numeric types)
@@ -1213,14 +1322,22 @@ module ActiveRecord
               end
           else
               unless caller[0] =~ /insert_fixture/i
-                "'#{quote_string(value)}'"
+                super 
               else
                 "#{value}"
               end 
           end
           when TrueClass then quoted_true    # return '1' for true
           when FalseClass then quoted_false  # return '0' for false
-          else super                         # rely on superclass handling
+          when nil        then "NULL"
+          when Date, Time then "'#{quoted_date(value)}'"
+          when Symbol     then "'#{quote_string(value.to_s)}'"
+          else
+            unless caller[0] =~ /insert_fixture/i 
+              "'#{quote_string(YAML.dump(value))}'"
+            else
+              "#{quote_string(YAML.dump(value))}"
+            end
         end
       end
 
@@ -1278,6 +1395,63 @@ module ActiveRecord
           :vargraphic  => { :name => "vargraphic", :limit => 1},
           :bigint      => { :name => "bigint"}
         }
+      end
+
+      def build_conn_str_for_dbops()
+        connect_str = "DRIVER={IBM DB2 ODBC DRIVER};ATTACH=true;"
+        if(!@host.nil?)
+          connect_str << "HOSTNAME=#{@host};"
+          connect_str << "PORT=#{@port};"
+          connect_str << "PROTOCOL=TCPIP;"
+        end
+        connect_str << "UID=#{@username};PWD=#{@password};"
+        return connect_str
+      end
+
+      def drop_database(dbName)
+        connect_str = build_conn_str_for_dbops()
+
+        #Ensure connection is closed before trying to drop a database. 
+        #As a connect call would have been made by call seeing connection in active
+        disconnect!
+
+        begin
+          dropConn = IBM_DB.connect(connect_str, '', '')
+        rescue StandardError => connect_err
+          raise "Failed to connect to server due to: #{connect_err}"
+        end
+
+        if(IBM_DB.dropDB(dropConn,dbName))
+          IBM_DB.close(dropConn)
+          return true
+        else
+          error = IBM_DB.getErrormsg(dropConn, IBM_DB::DB_CONN)
+          IBM_DB.close(dropConn)
+          raise "Could not drop Database due to: #{error}"
+        end
+      end
+
+      def create_database(dbName, codeSet=nil, mode=nil)
+        connect_str = build_conn_str_for_dbops()
+
+        #Ensure connection is closed before trying to drop a database.
+        #As a connect call would have been made by call seeing connection in active
+        disconnect!
+
+        begin
+          createConn = IBM_DB.connect(connect_str, '', '')
+        rescue StandardError => connect_err
+          raise "Failed to connect to server due to: #{connect_err}"
+        end
+
+        if(IBM_DB.createDB(createConn,dbName,codeSet,mode))
+          IBM_DB.close(createConn)
+          return true
+        else
+          error = IBM_DB.getErrormsg(createConn, IBM_DB::DB_CONN)
+          IBM_DB.close(createConn)
+          raise "Could not create Database due to: #{error}"
+        end
       end
 
       # IBM data servers do not support limits on certain data types (unlike MySQL)
@@ -1525,6 +1699,8 @@ module ActiveRecord
               column_default_value = col["column_def"]
               # If there is no default value, it assigns NIL
               column_default_value = nil if (column_default_value && column_default_value.upcase == 'NULL')
+              # If default value is IDENTITY GENERATED BY DEFAULT (this value is retrieved in case of id columns)
+              column_default_value = nil if (column_default_value && column_default_value.upcase =~ /IDENTITY GENERATED BY DEFAULT/i)
               # Removes single quotes from the default value
               column_default_value.gsub!(/^'(.*)'$/, '\1') unless column_default_value.nil?
               # Assigns the column type
@@ -1643,6 +1819,15 @@ module ActiveRecord
       end
 =end
 
+      #Add distinct clause to the sql if there is no order by specified
+      def distinct(columns, order_by)
+        if order_by.nil?
+          "DISTINCT #{columns}"
+        else
+          "#{columns}"
+        end
+      end
+
       # Sets a new default value for a column. This does not set the default
       # value to +NULL+, instead, it needs DatabaseStatements#execute which
       # can execute the appropriate SQL statement for setting the value.
@@ -1717,7 +1902,8 @@ To remove the column, the table must be dropped and recreated without the #{colu
         end
       end
 
-      def select(sql, name, stmt, results)
+      def select(stmt)
+        results = []
         # Fetches all the results available. IBM_DB.fetch_assoc(stmt) returns
         # an hash for each single record.
         # The loop stops when there aren't any more valid records to fetch
@@ -1736,6 +1922,7 @@ To remove the column, the table must be dropped and recreated without the #{colu
             raise error_msg
           end
         end
+        return results
       end
 
       def select_rows(sql, name, stmt, results)
@@ -1757,6 +1944,7 @@ To remove the column, the table must be dropped and recreated without the #{colu
             raise error_msg
           end
         end
+        return results
       end
 
       # Praveen
@@ -1962,11 +2150,14 @@ SET WITH DEFAULT #{@adapter.quote(default)}"
       def get_double_mapping
         return "double"
       end
-
+=begin
+      # Commenting this code, as offset handling is now part of sql and we need to handle it in select and also
+      # need not set cursor type during prepare or execute
       # Fetches all the results available. IBM_DB.fetch_assoc(stmt) returns
       # an hash for each single record.
       # The loop stops when there aren't any more valid records to fetch
-      def select(sql, name, stmt, results)
+      def select(stmt)
+        results = []
         begin
           if (!@offset.nil? && @offset >= 0) || (!@limit.nil? && @limit > 0)
             # We know at this point that there is an offset and/or a limit
@@ -2016,6 +2207,7 @@ SET WITH DEFAULT #{@adapter.quote(default)}"
               # Add the record to the +results+ array
               results <<  single_hash
             end
+            return results
           end
         rescue StandardError => fetch_error # Handle driver fetch errors
           error_msg = IBM_DB.getErrormsg(stmt, IBM_DB::DB_STMT )
@@ -2101,6 +2293,7 @@ SET WITH DEFAULT #{@adapter.quote(default)}"
           @offset = nil
           @limit = nil
         end
+        return results
       end
 
       # Praveen
@@ -2156,22 +2349,62 @@ SET WITH DEFAULT #{@adapter.quote(default)}"
           raise error_msg
         end
       end
-
+=end
       def query_offset_limit(sql, offset, limit)
-        @limit = limit
-        @offset = offset
-        if (offset.nil?)
-           sql << " FETCH FIRST #{limit} ROWS ONLY"
+        if(offset.nil? && limit.nil?)
+          return sql
         end
+
+        if (offset.nil?)
+           return sql << " FETCH FIRST #{limit} ROWS ONLY"
+        end
+
+        if(limit.nil?)
+          sql.sub!(/SELECT/i,"SELECT O.* FROM (SELECT I.*, ROW_NUMBER() OVER () sys_row_num FROM (SELECT")
+          return sql << ") AS I) AS O WHERE sys_row_num > #{offset}"
+        end
+
+        # Defines what will be the last record
+        last_record = offset + limit
+        # Transforms the SELECT query in order to retrieve/fetch only
+        # a number of records after the specified offset.
+        # 'select' or 'SELECT' is replaced with the partial query below that adds the sys_row_num column
+        # to select with the condition of this column being between offset+1 and the offset+limit
+        sql.sub!(/SELECT/i,"SELECT O.* FROM (SELECT I.*, ROW_NUMBER() OVER () sys_row_num FROM (SELECT")
+        # The final part of the query is appended to include a WHERE...BETWEEN...AND condition,
+        # and retrieve only a LIMIT number of records starting from the OFFSET+1
+        sql << ") AS I) AS O WHERE sys_row_num BETWEEN #{offset+1} AND #{last_record}"
       end
 
       def query_offset_limit!(sql, offset, limit, options)
-        @limit = limit
-        @offset = offset
-        if (offset.nil?)
-           sql << " FETCH FIRST #{limit} ROWS ONLY"
+        if(offset.nil? && limit.nil?)
+          options[:paramArray] = []
+          return sql
         end
-        options[:paramArray] = []
+
+        if (offset.nil?)
+           options[:paramArray] = []
+           return sql << " FETCH FIRST #{limit} ROWS ONLY"
+        end
+    
+        if(limit.nil?)
+          sql.sub!(/SELECT/i,"SELECT O.* FROM (SELECT I.*, ROW_NUMBER() OVER () sys_row_num FROM (SELECT")
+          sql << ") AS I) AS O WHERE sys_row_num > ?"
+          options[:paramArray] = [offset]
+          return 
+        end
+
+        # Defines what will be the last record
+        last_record = offset + limit
+        # Transforms the SELECT query in order to retrieve/fetch only
+        # a number of records after the specified offset.
+        # 'select' or 'SELECT' is replaced with the partial query below that adds the sys_row_num column
+        # to select with the condition of this column being between offset+1 and the offset+limit
+        sql.sub!(/SELECT/i,"SELECT O.* FROM (SELECT I.*, ROW_NUMBER() OVER () sys_row_num FROM (SELECT")
+        # The final part of the query is appended to include a WHERE...BETWEEN...AND condition,
+        # and retrieve only a LIMIT number of records starting from the OFFSET+1
+        sql << ") AS I) AS O WHERE sys_row_num BETWEEN ? AND ?"
+        options[:paramArray] = [offset+1, last_record]
       end
 
       # This method generates the default blob value specified for 
@@ -2202,40 +2435,6 @@ SET WITH DEFAULT #{@adapter.quote(default)}"
       # Reorganizes the table for column changes
       def reorg_table(table_name)
         execute("CALL ADMIN_CMD('REORG TABLE #{table_name}')")
-      end
-
-      def query_offset_limit(sql, offset, limit)
-        if (offset.nil?)
-           return sql << " FETCH FIRST #{limit} ROWS ONLY"
-        end
-        # Defines what will be the last record
-        last_record = offset + limit
-        # Transforms the SELECT query in order to retrieve/fetch only
-        # a number of records after the specified offset.
-        # 'select' or 'SELECT' is replaced with the partial query below that adds the sys_row_num column
-        # to select with the condition of this column being between offset+1 and the offset+limit
-        sql.sub!(/SELECT/i,"SELECT O.* FROM (SELECT I.*, ROW_NUMBER() OVER () sys_row_num FROM (SELECT")
-        # The final part of the query is appended to include a WHERE...BETWEEN...AND condition,
-        # and retrieve only a LIMIT number of records starting from the OFFSET+1
-        sql << ") AS I) AS O WHERE sys_row_num BETWEEN #{offset+1} AND #{last_record}"
-      end
-
-      def query_offset_limit!(sql, offset, limit, options)
-        if (offset.nil?)
-           options[:paramArray] = []
-           return sql << " FETCH FIRST #{limit} ROWS ONLY"
-        end
-        # Defines what will be the last record
-        last_record = offset + limit
-        # Transforms the SELECT query in order to retrieve/fetch only
-        # a number of records after the specified offset.
-        # 'select' or 'SELECT' is replaced with the partial query below that adds the sys_row_num column
-        # to select with the condition of this column being between offset+1 and the offset+limit
-        sql.sub!(/SELECT/i,"SELECT O.* FROM (SELECT I.*, ROW_NUMBER() OVER () sys_row_num FROM (SELECT")
-        # The final part of the query is appended to include a WHERE...BETWEEN...AND condition,
-        # and retrieve only a LIMIT number of records starting from the OFFSET+1
-        sql << ") AS I) AS O WHERE sys_row_num BETWEEN ? AND ?"
-        options[:paramArray] = [offset+1, last_record]
       end
     end # class IBM_DB2_LUW
 
@@ -2370,6 +2569,20 @@ SET WITH DEFAULT #{@adapter.quote(default)}"
 
     class IBM_DB2_ZOS_8 < IBM_DB2_ZOS
       include HostedDataServer
+
+      def query_offset_limit(sql, offset, limit)
+        if (!limit.nil?)
+           sql << " FETCH FIRST #{limit} ROWS ONLY"
+        end
+        return sql
+      end
+
+      def query_offset_limit!(sql, offset, limit, options)
+        if (!limit.nil?)
+           sql << " FETCH FIRST #{limit} ROWS ONLY"
+        end
+        options[:paramArray] = []
+      end
 
       # This call is needed on DB2 z/OS v8 for the creation of tables
       # with LOBs.  When issued, this call does the following:
@@ -2596,3 +2809,49 @@ SET WITH DEFAULT #{@adapter.quote(default)}"
     end # class IBM_IDS
   end # module ConnectionAdapters
 end # module ActiveRecord
+
+module Arel
+  module Visitors
+    class Visitor #opening and closing the class to ensure backward compatibility
+    end
+
+    class ToSql < Arel::Visitors::Visitor #opening and closing the class to ensure backward compatibility
+    end
+
+    class IBM_DB < Arel::Visitors::ToSql
+      private
+
+      def visit_Arel_Nodes_Limit o
+        visit o.expr
+      end
+
+      def visit_Arel_Nodes_Offset o
+        visit o.expr
+      end
+
+      def visit_Arel_Nodes_SelectStatement o
+        sql = [
+          (visit(o.with) if o.with),
+          o.cores.map { |x| visit_Arel_Nodes_SelectCore x }.join,
+          ("ORDER BY #{o.orders.map { |x| visit x }.join(', ')}" unless o.orders.empty?),
+          (visit(o.lock) if o.lock),
+        ].compact.join ' '
+
+        if o.limit
+          limit = visit(o.limit)
+        else
+          limit = nil
+        end
+
+        if o.offset
+          offset = visit(o.offset)
+        else
+          offset = nil
+        end
+        @connection.add_limit_offset!(sql, {:limit => limit, :offset => offset})
+        return sql
+      end
+
+    end
+  end
+end

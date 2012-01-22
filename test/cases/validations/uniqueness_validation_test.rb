@@ -6,19 +6,6 @@ require 'models/warehouse_thing'
 require 'models/guid'
 require 'models/event'
 
-# The following methods in Topic are used in test_conditional_validation_*
-class Topic
-  has_many :unique_replies, :dependent => :destroy, :foreign_key => "parent_id"
-  has_many :silly_unique_replies, :dependent => :destroy, :foreign_key => "parent_id"
-end
-
-class UniqueReply < Reply
-  validates_uniqueness_of :content, :scope => 'parent_id'
-end
-
-class SillyUniqueReply < UniqueReply
-end
-
 class Wizard < ActiveRecord::Base
   self.abstract_class = true
 
@@ -36,7 +23,7 @@ class Thaumaturgist < IneptWizard
 end
 
 class UniquenessValidationTest < ActiveRecord::TestCase
-  fixtures :topics, :warehouse_things, :developers
+  fixtures :topics, 'warehouse_things', :developers
 
   repair_validations(Topic, Reply)
 
@@ -60,7 +47,7 @@ class UniquenessValidationTest < ActiveRecord::TestCase
 
   def test_validates_uniqueness_with_validates
     Topic.validates :title, :uniqueness => true
-    t = Topic.create!('title' => 'abc')
+    Topic.create!('title' => 'abc')
 
     t2 = Topic.new('title' => 'abc')
     assert !t2.valid?
@@ -175,6 +162,32 @@ class UniquenessValidationTest < ActiveRecord::TestCase
     end
   end
 
+  def test_validate_case_sensitive_uniqueness_with_special_sql_like_chars
+    Topic.validates_uniqueness_of(:title, :case_sensitive => true)
+
+    t = Topic.new("title" => "I'm unique!")
+    assert t.save, "Should save t as unique"
+
+    t2 = Topic.new("title" => "I'm %")
+    assert t2.save, "Should save t2 as unique"
+
+    t3 = Topic.new("title" => "I'm uniqu_!")
+    assert t3.save, "Should save t3 as unique"
+  end
+
+  def test_validate_case_insensitive_uniqueness_with_special_sql_like_chars
+    Topic.validates_uniqueness_of(:title, :case_sensitive => false)
+
+    t = Topic.new("title" => "I'm unique!")
+    assert t.save, "Should save t as unique"
+
+    t2 = Topic.new("title" => "I'm %")
+    assert t2.save, "Should save t2 as unique"
+
+    t3 = Topic.new("title" => "I'm uniqu_!")
+    assert t3.save, "Should save t3 as unique"
+  end
+
   def test_validate_case_sensitive_uniqueness
     Topic.validates_uniqueness_of(:title, :case_sensitive => true, :allow_nil => true)
 
@@ -201,7 +214,7 @@ class UniquenessValidationTest < ActiveRecord::TestCase
 
   def test_validate_case_sensitive_uniqueness_with_attribute_passed_as_integer
     Topic.validates_uniqueness_of(:title, :case_sensitve => true)
-    t = Topic.create!('title' => 101)
+    Topic.create!('title' => 101)
 
     t2 = Topic.new('title' => 101)
     assert !t2.valid?
@@ -243,12 +256,15 @@ class UniquenessValidationTest < ActiveRecord::TestCase
   end
 
   def test_validate_uniqueness_with_limit_and_utf8
-    with_kcode('UTF8') do
-      # Event.title is limited to 5 characters
-      e1 = Event.create(:title => "一二三四五")
-      assert e1.valid?, "Could not create an event with a unique, 5 character title"
-      e2 = Event.create(:title => "一二三四五六七八")
-      assert !e2.valid?, "Created an event whose title, with limit taken into account, is not unique"
+    unless current_adapter?(:IBM_DBAdapter)
+      # Limit for the varchar field is number of bytes and not characters for DB2. Hence the below test cases is expected to fail.
+      with_kcode('UTF8') do
+        # Event.title is limited to 5 characters
+        e1 = Event.create(:title => "一二三四五")
+        assert e1.valid?, "Could not create an event with a unique, 5 character title"
+        e2 = Event.create(:title => "一二三四五六七八")
+        assert !e2.valid?, "Created an event whose title, with limit taken into account, is not unique"
+      end
     end
   end
 

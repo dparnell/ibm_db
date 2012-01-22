@@ -1,3 +1,4 @@
+=begin
 ActiveRecord::Schema.define do
 
   execute "DROP TABLE COMMENTS" rescue nil
@@ -204,3 +205,4 @@ execute <<_SQL
 _SQL
 
 end
+=end

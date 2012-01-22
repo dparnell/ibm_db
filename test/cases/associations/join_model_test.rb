@@ -1,7 +1,9 @@
 require "cases/helper"
+require 'active_support/core_ext/object/inclusion'
 require 'models/tag'
 require 'models/tagging'
 require 'models/post'
+require 'models/rating'
 require 'models/item'
 require 'models/comment'
 require 'models/author'
@@ -11,9 +13,13 @@ require 'models/vertex'
 require 'models/edge'
 require 'models/book'
 require 'models/citation'
+require 'models/aircraft'
+require 'models/engine'
+require 'models/car'
 
 class AssociationsJoinModelTest < ActiveRecord::TestCase
-  self.use_transactional_fixtures = false
+  self.use_transactional_fixtures = false unless supports_savepoints?
+
   fixtures :posts, :authors, :categories, :categorizations, :comments, :tags, :taggings, :author_favorites, :vertices, :items, :books,
     # Reload edges table from fixtures as otherwise repeated test was failing
     :edges
@@ -43,43 +49,14 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
     assert_queries(1) { assert_equal 0, author.unique_categorized_posts.count(:title, :conditions => "title is NULL") }
     assert !authors(:mary).unique_categorized_posts.loaded?
   end
-  
-  unless current_adapter?(:IBM_DBAdapter)
-    def test_has_many_uniq_through_find
-     assert_equal 1, authors(:mary).unique_categorized_posts.find(:all).size
-    end
-  
-    def test_has_many_uniq_through_dynamic_find
-     assert_equal 1, authors(:mary).unique_categorized_posts.find_all_by_title("So I was thinking").size
-    end
-    # LUW:     [IBM][CLI Driver][DB2/LINUX] SQL0214N  
-        # An expression in the ORDER BY clause in the following position, 
-        # or starting with "DEVELOPERS" in the "ORDER BY" clause is not valid.  
-        # Reason code = "2".  SQLSTATE=42822 SQLCODE=-214: 
-        #   SELECT DISTINCT projects.id FROM projects  
-        #      LEFT OUTER JOIN developers_projects ON developers_projects.project_id = projects.id  
-        #      LEFT OUTER JOIN developers ON developers.id = developers_projects.developer_id 
-        #      ORDER BY developers.created_at
-        # 
-        # i5:   [IBM][CLI Driver][AS] SQL0214N  
-        # An expression in the ORDER BY clause in the following position, 
-        # or starting with "1" in the "CREATED_AT" clause is not valid.  
-        # Reason code = "2".  SQLSTATE=42822 SQLCODE=-214: 
-        #   SELECT DISTINCT projects.id FROM projects  
-        #      LEFT OUTER JOIN developers_projects ON developers_projects.project_id = projects.id  
-        #      LEFT OUTER JOIN developers ON developers.id = developers_projects.developer_id 
-        #      ORDER BY developers.created_at
-        # 
-        # zOS 9:[IBM][CLI Driver][DB2] SQL0214N  
-        # An expression in the ORDER BY clause in the following position, 
-        # or starting with "CREATED_AT" in the "ORDER BY" clause is not valid.  
-        # Reason code = "2".  SQLSTATE=42822 SQLCODE=-214: 
-        #   SELECT DISTINCT projects.id FROM projects  
-        #      LEFT OUTER JOIN developers_projects ON developers_projects.project_id = projects.id  
-        #      LEFT OUTER JOIN developers ON developers.id = developers_projects.developer_id 
-        #      ORDER BY developers.created_at
-        # 
-  end     
+
+  def test_has_many_uniq_through_find
+    assert_equal 1, authors(:mary).unique_categorized_posts.find(:all).size
+  end
+
+  def test_has_many_uniq_through_dynamic_find
+    assert_equal 1, authors(:mary).unique_categorized_posts.find_all_by_title("So I was thinking").size
+  end
 
   def test_polymorphic_has_many_going_through_join_model
     assert_equal tags(:general), tag = posts(:welcome).tags.first
@@ -114,16 +91,9 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
     end
   end
 
-  def test_polymorphic_has_many_going_through_join_model_with_disabled_include
-    assert_equal tags(:general), tag = posts(:welcome).tags.add_joins_and_select.first
-    assert_queries 1 do
-      tag.tagging
-    end
-  end
-
   def test_polymorphic_has_many_going_through_join_model_with_custom_select_and_joins
     assert_equal tags(:general), tag = posts(:welcome).tags.add_joins_and_select.first
-    tag.author_id
+    assert_nothing_raised(NoMethodError) { tag.author_id }
   end
 
   def test_polymorphic_has_many_going_through_join_model_with_custom_foreign_key
@@ -169,7 +139,21 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
   def test_set_polymorphic_has_one
     tagging = tags(:misc).taggings.create
     posts(:thinking).tagging = tagging
-    assert_equal "Post", tagging.taggable_type
+
+    assert_equal "Post",              tagging.taggable_type
+    assert_equal posts(:thinking).id, tagging.taggable_id
+    assert_equal posts(:thinking),    tagging.taggable
+  end
+
+  def test_set_polymorphic_has_one_on_new_record
+    tagging = tags(:misc).taggings.create
+    post = Post.new :title => "foo", :body => "bar"
+    post.tagging = tagging
+    post.save!
+
+    assert_equal "Post",  tagging.taggable_type
+    assert_equal post.id, tagging.taggable_id
+    assert_equal post,    tagging.taggable
   end
 
   def test_create_polymorphic_has_many_with_scope
@@ -188,14 +172,14 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
 
   def test_create_polymorphic_has_one_with_scope
     old_count = Tagging.count
-    tagging = posts(:welcome).tagging.create(:tag => tags(:misc))
+    tagging = posts(:welcome).create_tagging(:tag => tags(:misc))
     assert_equal "Post", tagging.taggable_type
     assert_equal old_count+1, Tagging.count
   end
 
   def test_delete_polymorphic_has_many_with_delete_all
     assert_equal 1, posts(:welcome).taggings.count
-    posts(:welcome).taggings.first.update_attribute :taggable_type, 'PostWithHasManyDeleteAll'
+    posts(:welcome).taggings.first.update_column :taggable_type, 'PostWithHasManyDeleteAll'
     post = find_post_with_dependency(1, :has_many, :taggings, :delete_all)
 
     old_count = Tagging.count
@@ -206,7 +190,7 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
 
   def test_delete_polymorphic_has_many_with_destroy
     assert_equal 1, posts(:welcome).taggings.count
-    posts(:welcome).taggings.first.update_attribute :taggable_type, 'PostWithHasManyDestroy'
+    posts(:welcome).taggings.first.update_column :taggable_type, 'PostWithHasManyDestroy'
     post = find_post_with_dependency(1, :has_many, :taggings, :destroy)
 
     old_count = Tagging.count
@@ -217,7 +201,7 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
 
   def test_delete_polymorphic_has_many_with_nullify
     assert_equal 1, posts(:welcome).taggings.count
-    posts(:welcome).taggings.first.update_attribute :taggable_type, 'PostWithHasManyNullify'
+    posts(:welcome).taggings.first.update_column :taggable_type, 'PostWithHasManyNullify'
     post = find_post_with_dependency(1, :has_many, :taggings, :nullify)
 
     old_count = Tagging.count
@@ -228,7 +212,7 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
 
   def test_delete_polymorphic_has_one_with_destroy
     assert posts(:welcome).tagging
-    posts(:welcome).tagging.update_attribute :taggable_type, 'PostWithHasOneDestroy'
+    posts(:welcome).tagging.update_column :taggable_type, 'PostWithHasOneDestroy'
     post = find_post_with_dependency(1, :has_one, :tagging, :destroy)
 
     old_count = Tagging.count
@@ -239,7 +223,7 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
 
   def test_delete_polymorphic_has_one_with_nullify
     assert posts(:welcome).tagging
-    posts(:welcome).tagging.update_attribute :taggable_type, 'PostWithHasOneNullify'
+    posts(:welcome).tagging.update_column :taggable_type, 'PostWithHasOneNullify'
     post = find_post_with_dependency(1, :has_one, :tagging, :nullify)
 
     old_count = Tagging.count
@@ -249,7 +233,7 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
   end
 
   def test_has_many_with_piggyback
-    assert_equal "2", categories(:sti_test).authors.first.post_id.to_s
+    assert_equal "2", categories(:sti_test).authors_with_select.first.post_id.to_s
   end
 
   def test_include_has_many_through
@@ -323,8 +307,24 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
   end
 
   def test_has_many_going_through_join_model_with_custom_foreign_key
-    assert_equal [], posts(:thinking).authors
+    assert_equal [authors(:bob)], posts(:thinking).authors
     assert_equal [authors(:mary)], posts(:authorless).authors
+  end
+
+  def test_has_many_going_through_join_model_with_custom_primary_key
+    assert_equal [authors(:david)], posts(:thinking).authors_using_author_id
+  end
+
+  def test_has_many_going_through_polymorphic_join_model_with_custom_primary_key
+    assert_equal [tags(:general)], posts(:eager_other).tags_using_author_id
+  end
+
+  def test_has_many_through_with_custom_primary_key_on_belongs_to_source
+    assert_equal [authors(:david), authors(:david)], posts(:thinking).author_using_custom_pk
+  end
+
+  def test_has_many_through_with_custom_primary_key_on_has_many_source
+    assert_equal [authors(:david), authors(:bob)], posts(:thinking).authors_using_custom_pk.order('authors.id')
   end
 
   def test_both_scoped_and_explicit_joins_should_be_respected
@@ -353,11 +353,16 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
   end
 
   def test_has_many_polymorphic
-    assert_raise ActiveRecord::HasManyThroughAssociationPolymorphicError do
-      assert_equal posts(:welcome, :thinking), tags(:general).taggables
+    assert_raise ActiveRecord::HasManyThroughAssociationPolymorphicSourceError do
+      tags(:general).taggables
     end
+
+    assert_raise ActiveRecord::HasManyThroughAssociationPolymorphicThroughError do
+      taggings(:welcome_general).things
+    end
+
     assert_raise ActiveRecord::EagerLoadPolymorphicError do
-      assert_equal posts(:welcome, :thinking), tags(:general).taggings.find(:all, :include => :taggable, :conditions => 'bogus_table.column = 1')
+      tags(:general).taggings.find(:all, :include => :taggable, :conditions => 'bogus_table.column = 1')
     end
   end
 
@@ -413,50 +418,16 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
     end
   end
 
-  def test_has_many_through_has_many_through
-    assert_raise(ActiveRecord::HasManyThroughSourceAssociationMacroError) { authors(:david).tags }
-  end
-
-  def test_has_many_through_habtm
-    assert_raise(ActiveRecord::HasManyThroughSourceAssociationMacroError) { authors(:david).post_categories }
-  end
-
-  unless current_adapter?(:IBM_DBAdapter) 
+  unless current_adapter?(:IBM_DBAdapter)
+    # DB2 throws SQL0214N
     def test_eager_load_has_many_through_has_many
       author = Author.find :first, :conditions => ['name = ?', 'David'], :include => :comments, :order => 'comments.id'
       SpecialComment.new; VerySpecialComment.new
       assert_no_queries do
-        assert_equal [1,2,3,5,6,7,8,9,10], author.comments.collect(&:id)
+        assert_equal [1,2,3,5,6,7,8,9,10,12], author.comments.collect(&:id)
       end
     end
-    # LUW:     [IBM][CLI Driver][DB2/LINUX] SQL0214N  
-        # An expression in the ORDER BY clause in the following position, 
-        # or starting with "DEVELOPERS" in the "ORDER BY" clause is not valid.  
-        # Reason code = "2".  SQLSTATE=42822 SQLCODE=-214: 
-        #   SELECT DISTINCT projects.id FROM projects  
-        #      LEFT OUTER JOIN developers_projects ON developers_projects.project_id = projects.id  
-        #      LEFT OUTER JOIN developers ON developers.id = developers_projects.developer_id 
-        #      ORDER BY developers.created_at
-        # 
-        # i5:   [IBM][CLI Driver][AS] SQL0214N  
-        # An expression in the ORDER BY clause in the following position, 
-        # or starting with "1" in the "CREATED_AT" clause is not valid.  
-        # Reason code = "2".  SQLSTATE=42822 SQLCODE=-214: 
-        #   SELECT DISTINCT projects.id FROM projects  
-        #      LEFT OUTER JOIN developers_projects ON developers_projects.project_id = projects.id  
-        #      LEFT OUTER JOIN developers ON developers.id = developers_projects.developer_id 
-        #      ORDER BY developers.created_at
-        # 
-        # zOS 9:[IBM][CLI Driver][DB2] SQL0214N  
-        # An expression in the ORDER BY clause in the following position, 
-        # or starting with "CREATED_AT" in the "ORDER BY" clause is not valid.  
-        # Reason code = "2".  SQLSTATE=42822 SQLCODE=-214: 
-        #   SELECT DISTINCT projects.id FROM projects  
-        #      LEFT OUTER JOIN developers_projects ON developers_projects.project_id = projects.id  
-        #      LEFT OUTER JOIN developers ON developers.id = developers_projects.developer_id 
-        #      ORDER BY developers.created_at
-        # 
-  end 
+  end
 
   def test_eager_load_has_many_through_has_many_with_conditions
     post = Post.find(:first, :include => :invalid_tags)
@@ -503,7 +474,7 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
     assert saved_post.tags.include?(new_tag)
 
     assert new_tag.persisted?
-    assert saved_post.reload.tags(true).include?(new_tag)
+    assert new_tag.in?(saved_post.reload.tags(true))
 
 
     new_post = Post.new(:title => "Association replacmenet works!", :body => "You best believe it.")
@@ -516,7 +487,7 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
 
     new_post.save!
     assert new_post.persisted?
-    assert new_post.reload.tags(true).include?(saved_tag)
+    assert saved_tag.in?(new_post.reload.tags(true))
 
     assert !posts(:thinking).tags.build.persisted?
     assert !posts(:thinking).tags.new.persisted?
@@ -554,17 +525,21 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
     assert_nothing_raised { vertices(:vertex_1).sinks << vertices(:vertex_5) }
   end
 
+  def test_add_to_join_table_with_no_id
+    assert_nothing_raised { vertices(:vertex_1).sinks << vertices(:vertex_5) }
+  end
+
   def test_has_many_through_collection_size_doesnt_load_target_if_not_loaded
     author = authors(:david)
-    assert_equal 9, author.comments.size
+    assert_equal 10, author.comments.size
     assert !author.comments.loaded?
   end
 
   def test_has_many_through_collection_size_uses_counter_cache_if_it_exists
-    author = authors(:david)
-    author.stubs(:read_attribute).with('comments_count').returns(100)
-    assert_equal 100, author.comments.size
-    assert !author.comments.loaded?
+    c = categories(:general)
+    c.categorizations_count = 100
+    assert_equal 100, c.categorizations.size
+    assert !c.categorizations.loaded?
   end
 
   def test_adding_junk_to_has_many_through_should_raise_type_mismatch
@@ -645,37 +620,7 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
   def test_uniq_has_many_through_should_retain_order
     comment_ids = authors(:david).comments.map(&:id)
     assert_equal comment_ids.sort, authors(:david).ordered_uniq_comments.map(&:id)
-  
-    unless current_adapter?(:IBM_DBAdapter)
-      assert_equal comment_ids.sort.reverse, authors(:david).ordered_uniq_comments_desc.map(&:id)
-      # LUW:     [IBM][CLI Driver][DB2/LINUX] SQL0214N  
-       # An expression in the ORDER BY clause in the following position, 
-       # or starting with "DEVELOPERS" in the "ORDER BY" clause is not valid.  
-       # Reason code = "2".  SQLSTATE=42822 SQLCODE=-214: 
-       #   SELECT DISTINCT projects.id FROM projects  
-       #      LEFT OUTER JOIN developers_projects ON developers_projects.project_id = projects.id  
-       #      LEFT OUTER JOIN developers ON developers.id = developers_projects.developer_id 
-       #      ORDER BY developers.created_at
-       # 
-       # i5:   [IBM][CLI Driver][AS] SQL0214N  
-       # An expression in the ORDER BY clause in the following position, 
-       # or starting with "1" in the "CREATED_AT" clause is not valid.  
-       # Reason code = "2".  SQLSTATE=42822 SQLCODE=-214: 
-       #   SELECT DISTINCT projects.id FROM projects  
-       #      LEFT OUTER JOIN developers_projects ON developers_projects.project_id = projects.id  
-       #      LEFT OUTER JOIN developers ON developers.id = developers_projects.developer_id 
-       #      ORDER BY developers.created_at
-       # 
-       # zOS 9:[IBM][CLI Driver][DB2] SQL0214N  
-       # An expression in the ORDER BY clause in the following position, 
-       # or starting with "CREATED_AT" in the "ORDER BY" clause is not valid.  
-       # Reason code = "2".  SQLSTATE=42822 SQLCODE=-214: 
-       #   SELECT DISTINCT projects.id FROM projects  
-       #      LEFT OUTER JOIN developers_projects ON developers_projects.project_id = projects.id  
-       #      LEFT OUTER JOIN developers ON developers.id = developers_projects.developer_id 
-       #      ORDER BY developers.created_at
-       # 
-    end  
+    assert_equal comment_ids.sort.reverse, authors(:david).ordered_uniq_comments_desc.map(&:id)
   end
 
   def test_polymorphic_has_many
@@ -720,7 +665,7 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
 
   def test_preload_nil_polymorphic_belongs_to
     assert_nothing_raised do
-      taggings = Tagging.find(:all, :include => :taggable, :conditions => ['taggable_type IS NULL'])
+      Tagging.find(:all, :include => :taggable, :conditions => ['taggable_type IS NULL'])
     end
   end
 
@@ -763,16 +708,15 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
     end
     assert ! david.categories.loaded?
   end
-  
-  unless current_adapter?(:IBM_DBAdapter) #works fine stand alone, however when run as part of whole suite it breaks unique constraint
-    def test_has_many_through_include_returns_false_for_non_matching_record_to_verify_scoping
-      david = authors(:david)
-      category = Category.create!(:name => 'Not Associated')
-  
-      assert ! david.categories.loaded?
-      assert ! david.categories.include?(category)
-    end
-  end 
+
+  def test_has_many_through_include_returns_false_for_non_matching_record_to_verify_scoping
+    david = authors(:david)
+    category = Category.create!(:name => 'Not Associated')
+
+    assert ! david.categories.loaded?
+    assert ! david.categories.include?(category)
+  end
+
   def test_has_many_through_goes_through_all_sti_classes
     sub_sti_post = SubStiPost.create!(:title => 'test', :body => 'test', :author_id => 1)
     new_comment = sub_sti_post.comments.create(:body => 'test')
@@ -780,11 +724,17 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
     assert_equal [9, 10, new_comment.id], authors(:david).sti_post_comments.map(&:id).sort
   end
 
+  def test_has_many_with_pluralize_table_names_false
+    aircraft = Aircraft.create!(:name => "Airbus 380")
+    engine = Engine.create!(:car_id => aircraft.id)
+    assert_equal aircraft.engines, [engine]
+  end
+
   private
     # create dynamic Post models to allow different dependency options
     def find_post_with_dependency(post_id, association, association_name, dependency)
       class_name = "PostWith#{association.to_s.classify}#{dependency.to_s.classify}"
-      Post.find(post_id).update_attribute :type, class_name
+      Post.find(post_id).update_column :type, class_name
       klass = Object.const_set(class_name, Class.new(ActiveRecord::Base))
       klass.set_table_name 'posts'
       klass.send(association, association_name, :as => :taggable, :dependent => dependency)

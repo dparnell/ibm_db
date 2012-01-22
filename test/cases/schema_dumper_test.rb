@@ -1,13 +1,23 @@
 require "cases/helper"
-require 'stringio'
+require 'active_support/core_ext/string/encoding'
 
 
 class SchemaDumperTest < ActiveRecord::TestCase
+  def setup
+    @stream = StringIO.new
+  end
+
   def standard_dump
-    stream = StringIO.new
+    @stream = StringIO.new
     ActiveRecord::SchemaDumper.ignore_tables = []
-    ActiveRecord::SchemaDumper.dump(ActiveRecord::Base.connection, stream)
-    stream.string
+    ActiveRecord::SchemaDumper.dump(ActiveRecord::Base.connection, @stream)
+    @stream.string
+  end
+
+  if "string".encoding_aware?
+    def test_magic_comment
+      assert_match "# encoding: #{@stream.external_encoding.name}", standard_dump
+    end
   end
 
   def test_schema_dump
@@ -22,9 +32,12 @@ class SchemaDumperTest < ActiveRecord::TestCase
     assert_no_match %r{create_table "sqlite_sequence"}, output
   end
 
-  unless current_adapter?(:IBM_DBAdapter) #DB2 is case insensitive 
-    def test_schema_dump_includes_camelcase_table_name
-      output = standard_dump
+  def test_schema_dump_includes_camelcase_table_name
+    output = standard_dump
+    if current_adapter?(:IBM_DBAdapter)
+      #DB2 is case insensitive
+      assert_match %r{create_table "camelcase"}, output
+    else
       assert_match %r{create_table "CamelCase"}, output
     end
   end
@@ -102,7 +115,7 @@ class SchemaDumperTest < ActiveRecord::TestCase
 
       assert_match %r{c_int_4.*}, output
       assert_no_match %r{c_int_4.*:limit}, output
-    elsif current_adapter?(:SQLiteAdapter)
+    elsif current_adapter?(:SQLite3Adapter)
       assert_match %r{c_int_1.*:limit => 1}, output
       assert_match %r{c_int_2.*:limit => 2}, output
       assert_match %r{c_int_3.*:limit => 3}, output
@@ -111,7 +124,7 @@ class SchemaDumperTest < ActiveRecord::TestCase
     assert_match %r{c_int_without_limit.*}, output
     assert_no_match %r{c_int_without_limit.*:limit}, output
 
-    if current_adapter?(:SQLiteAdapter)
+    if current_adapter?(:SQLite3Adapter)
       assert_match %r{c_int_5.*:limit => 5}, output
       assert_match %r{c_int_6.*:limit => 6}, output
       assert_match %r{c_int_7.*:limit => 7}, output
@@ -121,13 +134,13 @@ class SchemaDumperTest < ActiveRecord::TestCase
       assert_match %r{c_int_6.*:limit => 6}, output
       assert_match %r{c_int_7.*:limit => 7}, output
       assert_match %r{c_int_8.*:limit => 8}, output
+    elsif current_adapter?(:IBM_DBAdapter)
+      #Limits is not supported on integer column by DB2
     else
-      unless current_adapter?(:IBM_DBAdapter) #IBM data servers do not support limits on integer datatype
-        assert_match %r{c_int_5.*:limit => 8}, output
-        assert_match %r{c_int_6.*:limit => 8}, output
-        assert_match %r{c_int_7.*:limit => 8}, output
-        assert_match %r{c_int_8.*:limit => 8}, output
-      end 
+      assert_match %r{c_int_5.*:limit => 8}, output
+      assert_match %r{c_int_6.*:limit => 8}, output
+      assert_match %r{c_int_7.*:limit => 8}, output
+      assert_match %r{c_int_8.*:limit => 8}, output
     end
   end
 
@@ -207,6 +220,13 @@ class SchemaDumperTest < ActiveRecord::TestCase
         assert_match %r{t.xml "data"}, output
       end
     end
+
+    def test_schema_dump_includes_tsvector_shorthand_definition
+      output = standard_dump
+      if %r{create_table "postgresql_tsvectors"} =~ output
+        assert_match %r{t.tsvector "text_vector"}, output
+      end
+    end
   end
 
   def test_schema_dump_keeps_large_precision_integer_columns_as_decimal
@@ -215,7 +235,8 @@ class SchemaDumperTest < ActiveRecord::TestCase
     if current_adapter?(:OracleAdapter)
       assert_match %r{t.integer\s+"atoms_in_universe",\s+:precision => 38,\s+:scale => 0}, output
     elsif current_adapter?(:IBM_DBAdapter)
-      assert_match %r{t.integer\s+"atoms_in_universe",\s+:precision => 31,\s+:scale => 0}, output
+      # DB2 supports precision up to 31
+      assert_match %r{t.decimal\s+"atoms_in_universe",\s+:precision => 31,\s+:scale => 0}, output
     else
       assert_match %r{t.decimal\s+"atoms_in_universe",\s+:precision => 55,\s+:scale => 0}, output
     end
@@ -229,4 +250,3 @@ class SchemaDumperTest < ActiveRecord::TestCase
     assert_match %r{t.string[[:space:]]+"id",[[:space:]]+:null => false$}, match[2], "non-primary key id column not preserved"
   end
 end
-

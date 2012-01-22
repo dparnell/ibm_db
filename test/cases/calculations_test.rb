@@ -23,6 +23,18 @@ class CalculationsTest < ActiveRecord::TestCase
     assert_equal 53.0, value
   end
 
+  def test_should_return_decimal_average_of_integer_field
+    return if current_adapter?(:IBM_DBAdapter) #average cannot be a decimal value when applied on integer field
+    value = Account.average(:id)
+    assert_equal 3.5, value
+  end
+
+  def test_should_return_integer_average_if_db_returns_such
+    Account.connection.stubs :select_value => 3
+    value = Account.average(:id)
+    assert_equal 3, value
+  end
+
   def test_should_return_nil_as_average
     assert_nil NumericData.average(:bank_balance)
   end
@@ -55,6 +67,19 @@ class CalculationsTest < ActiveRecord::TestCase
     [1,6,2].each { |firm_id| assert c.keys.include?(firm_id) }
   end
 
+  def test_should_group_by_multiple_fields
+    c = Account.count(:all, :group => ['firm_id', :credit_limit])
+    [ [nil, 50], [1, 50], [6, 50], [6, 55], [9, 53], [2, 60] ].each { |firm_and_limit| assert c.keys.include?(firm_and_limit) }
+  end
+
+  def test_should_group_by_multiple_fields_having_functions
+    c = Topic.group(:author_name, 'COALESCE(type, title)').count(:all)
+    assert_equal 1, c[["Carl", "The Third Topic of the day"]]
+    assert_equal 1, c[["Mary", "Reply"]]
+    assert_equal 1, c[["David", "The First Topic"]]
+    assert_equal 1, c[["Carl", "Reply"]]
+  end
+
   def test_should_group_by_summed_field
     c = Account.sum(:credit_limit, :group => :firm_id)
     assert_equal 50,   c[1]
@@ -85,6 +110,51 @@ class CalculationsTest < ActiveRecord::TestCase
     assert_equal [2, 6], c.keys.compact
   end
 
+  def test_limit_should_apply_before_count
+    accounts = Account.limit(3).where('firm_id IS NOT NULL')
+
+    assert_equal 3, accounts.count(:firm_id)
+    assert_equal 3, accounts.select(:firm_id).count
+  end
+
+  def test_count_should_shortcut_with_limit_zero
+    accounts = Account.limit(0)
+
+    assert_no_queries { assert_equal 0, accounts.count }
+  end
+
+  def test_limit_is_kept
+    return if current_adapter?(:OracleAdapter, :IBM_DBAdapter)
+
+    queries = assert_sql { Account.limit(1).count }
+    assert_equal 1, queries.length
+    assert_match(/LIMIT/, queries.first)
+  end
+
+  def test_offset_is_kept
+    return if current_adapter?(:OracleAdapter,:IBM_DBAdapter)
+
+    queries = assert_sql { Account.offset(1).count }
+    assert_equal 1, queries.length
+    assert_match(/OFFSET/, queries.first)
+  end
+
+  def test_limit_with_offset_is_kept
+    return if current_adapter?(:OracleAdapter,:IBM_DBAdapter)
+
+    queries = assert_sql { Account.limit(1).offset(1).count }
+    assert_equal 1, queries.length
+    assert_match(/LIMIT/, queries.first)
+    assert_match(/OFFSET/, queries.first)
+  end
+
+  def test_no_limit_no_offset
+    queries = assert_sql { Account.count }
+    assert_equal 1, queries.length
+    assert_no_match(/LIMIT/, queries.first)
+    assert_no_match(/OFFSET/, queries.first)
+  end
+
   def test_should_group_by_summed_field_having_condition
     c = Account.sum(:credit_limit, :group => :firm_id,
                                    :having => 'sum(credit_limit) > 50')
@@ -99,6 +169,13 @@ class CalculationsTest < ActiveRecord::TestCase
     assert_nil        c[1]
     assert_equal 105, c[6]
     assert_equal 60,  c[2]
+  end
+
+  def test_should_group_by_summed_field_having_condition_from_select
+    c = Account.select("MIN(credit_limit) AS min_credit_limit").group(:firm_id).having("min_credit_limit > 50").sum(:credit_limit)
+    assert_nil       c[1]
+    assert_equal 60, c[2]
+    assert_equal 53, c[9]
   end
 
   def test_should_group_by_summed_association
@@ -166,11 +243,7 @@ class CalculationsTest < ActiveRecord::TestCase
   end
 
   def test_should_group_by_association_with_non_numeric_foreign_key
-    if( ActiveRecord::Base.connection.respond_to?(:pstmt_support_on) && ActiveRecord::Base.connection.pstmt_support_on == true )
-      ActiveRecord::Base.connection.expects(:prepared_select).returns([{"count_all" => 1, "firm_id" => "ABC"}])
-    else
-      ActiveRecord::Base.connection.expects(:select_all).returns([{"count_all" => 1, "firm_id" => "ABC"}])
-    end
+    ActiveRecord::Base.connection.expects(:select_all).returns([{"count_all" => 1, "firm_id" => "ABC"}])
 
     firm = mock()
     firm.expects(:id).returns("ABC")
@@ -254,6 +327,17 @@ class CalculationsTest < ActiveRecord::TestCase
     assert_equal 4, Account.count(:distinct => true, :include => :firm, :select => :credit_limit)
   end
 
+  def test_should_not_perform_joined_include_by_default
+    assert_equal Account.count, Account.includes(:firm).count
+    queries = assert_sql { Account.includes(:firm).count }
+    assert_no_match(/join/i, queries.last)
+  end
+
+  def test_should_perform_joined_include_when_referencing_included_tables
+    joined_count = Account.includes(:firm).where(:companies => {:name => '37signals'}).count
+    assert_equal 1, joined_count
+  end
+
   def test_should_count_scoped_select
     Account.update_all("credit_limit = NULL")
     assert_equal 0, Account.scoped(:select => "credit_limit").count
@@ -261,8 +345,8 @@ class CalculationsTest < ActiveRecord::TestCase
 
   def test_should_count_scoped_select_with_options
     Account.update_all("credit_limit = NULL")
-    Account.last.update_attribute('credit_limit', 49)
-    Account.first.update_attribute('credit_limit', 51)
+    Account.last.update_column('credit_limit', 49)
+    Account.first.update_column('credit_limit', 51)
 
     assert_equal 1, Account.scoped(:select => "credit_limit").count(:conditions => ['credit_limit >= 50'])
   end
@@ -340,7 +424,7 @@ class CalculationsTest < ActiveRecord::TestCase
   end
 
   def test_from_option_with_specified_index
-    if Edge.connection.adapter_name == 'MySQL'
+    if Edge.connection.adapter_name == 'MySQL' or Edge.connection.adapter_name == 'Mysql2'
       assert_equal Edge.count(:all), Edge.count(:all, :from => 'edges USE INDEX(unique_edge_index)')
       assert_equal Edge.count(:all, :conditions => 'sink_id < 5'),
           Edge.count(:all, :from => 'edges USE INDEX(unique_edge_index)', :conditions => 'sink_id < 5')
