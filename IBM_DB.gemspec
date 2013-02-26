@@ -7,7 +7,7 @@
 require 'rubygems'
 require 'pathname'
 
-SPEC = Gem::Specification.new do |spec|
+Gem::Specification.new do |spec|
   # Required spec
   spec.name     = 'ibm_db'
   spec.version  = '2.5.9'
@@ -54,9 +54,4 @@ SPEC = Gem::Specification.new do |spec|
   spec.test_file = 'test/ibm_db_test.rb'
   spec.has_rdoc = true
   spec.extra_rdoc_files = ["CHANGES", "README", "MANIFEST"]
-end
-
-if $0 == __FILE__
-  Gem::manage_gems
-  Gem::Builder.new(spec).build
 end
