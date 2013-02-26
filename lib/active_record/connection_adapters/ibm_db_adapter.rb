@@ -519,14 +519,14 @@ module ActiveRecord
             case server_info.DBMS_NAME
               when /DB2\//i             # DB2 for Linux, Unix and Windows (LUW)
                 case server_info.DBMS_VER
-                  when /09.07/i || /10/ # DB2 Version 9.7 (Cobra)
+                  when /09.07/i, /10/ # DB2 Version 9.7 (Cobra)
                     @servertype = IBM_DB2_LUW_COBRA.new(self)
                   else                  # DB2 Version 9.5 or below
                     @servertype = IBM_DB2_LUW.new(self)
                 end
               when /DB2/i               # DB2 for zOS
                 case server_info.DBMS_VER
-                  when /09/ || /10/             # DB2 for zOS version 9 and version 10
+                  when /09/, /10/             # DB2 for zOS version 9 and version 10
                     @servertype = IBM_DB2_ZOS.new(self)
                   when /08/             # DB2 for zOS version 8
                     @servertype = IBM_DB2_ZOS_8.new(self)
